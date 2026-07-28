@@ -41,6 +41,7 @@ runtime-smol = ["async-io", "smol"]
 
 # Configure `tracing` to log events via `log` if no `tracing` subscriber exists.
 log = ["tracing/log", "proto/log", "udp/log"]
+moq-trace = ["proto/moq-trace", "dep:moq-trace"]
 # Enable rustls logging
 rustls-log = ["rustls?/logging"]
 # Enable qlog support
@@ -57,6 +58,7 @@ async-std = { workspace = true, optional = true }
 bytes = { workspace = true }
 # Enables futures::io::{AsyncRead, AsyncWrite} support for streams
 futures-io = { workspace = true, optional = true }
+moq-trace = { version = "0.1", optional = true }
 rustc-hash = { workspace = true }
 pin-project-lite = { workspace = true }
 proto = { package = "quinn-proto", path = "../quinn-proto", version = "0.11.15", default-features = false }

@@ -191,16 +191,54 @@ impl PacketBuilder {
         let ack_eliciting = self.ack_eliciting;
         let exact_number = self.exact_number;
         let space_id = self.space;
-        let (size, padded) = self.finish(conn, now, buffer);
         let sent = match sent {
             Some(sent) => sent,
-            None => return,
+            None => {
+                let _ = self.finish(conn, now, buffer);
+                return;
+            }
         };
+
+        // MoQ trace hook: mark STREAM frame packet-build entry before encrypting.
+        #[cfg(feature = "moq-trace")]
+        for frame in sent.stream_frames.iter() {
+            moq_trace::global().emit_packet(moq_trace::Event::PacketStart(moq_trace::PacketEvent {
+                at_ns: moq_trace::now_ns(),
+                session_id: None,
+                direction: moq_trace::Direction::Outbound,
+                packet_number: Some(exact_number),
+                packet_space: Some(super::moq_trace_packet_space(space_id)),
+                udp_len: Some(0),
+                stream_id: Some(frame.id.0),
+                stream_offset_start: Some(frame.offsets.start),
+                stream_offset_end: Some(frame.offsets.end),
+                sample_rate: 0,
+            }));
+        }
+
+        let (size, padded) = self.finish(conn, now, buffer);
 
         let size = match padded || ack_eliciting {
             true => size as u16,
             false => 0,
         };
+
+        // MoQ trace hook: mark transmit queued after packet build and encryption.
+        #[cfg(feature = "moq-trace")]
+        for frame in sent.stream_frames.iter() {
+            moq_trace::global().emit_packet(moq_trace::Event::PacketEnd(moq_trace::PacketEvent {
+                at_ns: moq_trace::now_ns(),
+                session_id: None,
+                direction: moq_trace::Direction::Outbound,
+                packet_number: Some(exact_number),
+                packet_space: Some(super::moq_trace_packet_space(space_id)),
+                udp_len: Some(size as usize),
+                stream_id: Some(frame.id.0),
+                stream_offset_start: Some(frame.offsets.start),
+                stream_offset_end: Some(frame.offsets.end),
+                sample_rate: 0,
+            }));
+        }
 
         let packet = SentPacket {
             path_generation: conn.path.generation(),
@@ -260,6 +298,19 @@ impl PacketBuilder {
 
         buffer.resize(buffer.len() + packet_crypto.tag_len(), 0);
         let encode_start = self.partial_encode.start;
+        let len = buffer.len() - encode_start;
+        #[cfg(feature = "moq-trace")]
+        super::moq_trace_emit_point(
+            moq_trace::PacketTracePoint::TxPacketEncryptStart,
+            moq_trace::now_ns(),
+            moq_trace::Direction::Outbound,
+            Some(self.exact_number),
+            Some(self.space),
+            Some(len),
+            None,
+            None,
+            None,
+        );
         let packet_buf = &mut buffer[encode_start..];
         self.partial_encode.finish(
             packet_buf,
@@ -267,7 +318,20 @@ impl PacketBuilder {
             Some((self.exact_number, packet_crypto)),
         );
 
-        let len = buffer.len() - encode_start;
+        #[cfg(feature = "moq-trace")]
+        {
+            super::moq_trace_emit_point(
+                moq_trace::PacketTracePoint::TxPacketEncrypted,
+                moq_trace::now_ns(),
+                moq_trace::Direction::Outbound,
+                Some(self.exact_number),
+                Some(self.space),
+                Some(len),
+                None,
+                None,
+                None,
+            );
+        }
         conn.config.qlog_sink.emit_packet_sent(
             self.exact_number,
             len,
