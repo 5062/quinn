@@ -1043,7 +1043,7 @@ impl State {
                 packet: moq_trace::PacketEvent {
                     at_ns: moq_trace::now_ns(),
                     session_id: None,
-                    direction: moq_trace::Direction::Outbound,
+                    direction: moq_trace::Direction::Tx,
                     packet_number: None,
                     packet_space: None,
                     udp_len: Some(len),
@@ -1064,7 +1064,7 @@ impl State {
                     packet: moq_trace::PacketEvent {
                         at_ns: socket_done,
                         session_id: None,
-                        direction: moq_trace::Direction::Outbound,
+                        direction: moq_trace::Direction::Tx,
                         packet_number: None,
                         packet_space: None,
                         udp_len: Some(len),

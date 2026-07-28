@@ -799,7 +799,7 @@ impl RecvState {
                 packet: moq_trace::PacketEvent {
                     at_ns: moq_trace::now_ns(),
                     session_id: None,
-                    direction: moq_trace::Direction::Inbound,
+                    direction: moq_trace::Direction::Rx,
                     packet_number: None,
                     packet_space: None,
                     udp_len: None,
@@ -819,7 +819,7 @@ impl RecvState {
                             packet: moq_trace::PacketEvent {
                                 at_ns: moq_trace::now_ns(),
                                 session_id: None,
-                                direction: moq_trace::Direction::Inbound,
+                                direction: moq_trace::Direction::Rx,
                                 packet_number: None,
                                 packet_space: None,
                                 udp_len: Some(udp_len),
@@ -878,7 +878,7 @@ impl RecvState {
                         packet: moq_trace::PacketEvent {
                             at_ns: moq_trace::now_ns(),
                             session_id: None,
-                            direction: moq_trace::Direction::Inbound,
+                            direction: moq_trace::Direction::Rx,
                             packet_number: None,
                             packet_space: None,
                             udp_len: None,
@@ -902,7 +902,7 @@ impl RecvState {
                         packet: moq_trace::PacketEvent {
                             at_ns: moq_trace::now_ns(),
                             session_id: None,
-                            direction: moq_trace::Direction::Inbound,
+                            direction: moq_trace::Direction::Rx,
                             packet_number: None,
                             packet_space: None,
                             udp_len: None,
@@ -921,7 +921,7 @@ impl RecvState {
                         packet: moq_trace::PacketEvent {
                             at_ns: moq_trace::now_ns(),
                             session_id: None,
-                            direction: moq_trace::Direction::Inbound,
+                            direction: moq_trace::Direction::Rx,
                             packet_number: None,
                             packet_space: None,
                             udp_len: None,

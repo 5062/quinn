@@ -925,7 +925,7 @@ impl Connection {
             moq_trace_emit_point(
                 moq_trace::PacketTracePoint::TxPacketEncodeStart,
                 moq_trace::now_ns(),
-                moq_trace::Direction::Outbound,
+                moq_trace::Direction::Tx,
                 Some(trace_packet_number),
                 Some(space_id),
                 None,
@@ -941,7 +941,7 @@ impl Connection {
                 moq_trace_emit_point(
                     moq_trace::PacketTracePoint::TxPacketEncoded,
                     moq_trace::now_ns(),
-                    moq_trace::Direction::Outbound,
+                    moq_trace::Direction::Tx,
                     Some(trace_packet_number),
                     Some(space_id),
                     Some(trace_udp_len),
@@ -2283,7 +2283,7 @@ impl Connection {
             moq_trace_emit_point(
                 moq_trace::PacketTracePoint::RxPacketHeaderParseStart,
                 moq_trace::now_ns(),
-                moq_trace::Direction::Inbound,
+                moq_trace::Direction::Rx,
                 None,
                 None,
                 Some(trace_parse_len),
@@ -2305,7 +2305,7 @@ impl Connection {
                         moq_trace_emit_point(
                             moq_trace::PacketTracePoint::RxPacketHeaderParsed,
                             moq_trace::now_ns(),
-                            moq_trace::Direction::Inbound,
+                            moq_trace::Direction::Rx,
                             None,
                             space,
                             Some(len),
@@ -2322,7 +2322,7 @@ impl Connection {
                     moq_trace_emit_point(
                         moq_trace::PacketTracePoint::RxPacketHeaderParsed,
                         moq_trace::now_ns(),
-                        moq_trace::Direction::Inbound,
+                        moq_trace::Direction::Rx,
                         None,
                         None,
                         Some(trace_parse_len),
@@ -2352,7 +2352,7 @@ impl Connection {
         moq_trace_emit_point(
             moq_trace::PacketTracePoint::RxPacketDecryptStart,
             moq_trace::now_ns(),
-            moq_trace::Direction::Inbound,
+            moq_trace::Direction::Rx,
             None,
             trace_decrypt_space,
             Some(trace_decrypt_len),
@@ -2370,7 +2370,7 @@ impl Connection {
         moq_trace_emit_point(
             moq_trace::PacketTracePoint::RxPacketDecrypted,
             moq_trace::now_ns(),
-            moq_trace::Direction::Inbound,
+            moq_trace::Direction::Rx,
             None,
             trace_decrypt_space,
             Some(trace_decrypt_len),
@@ -2420,7 +2420,7 @@ impl Connection {
         moq_trace_emit_point(
             moq_trace::PacketTracePoint::RxPacketDecryptStart,
             moq_trace::now_ns(),
-            moq_trace::Direction::Inbound,
+            moq_trace::Direction::Rx,
             None,
             trace_decrypt_space,
             trace_decrypt_len,
@@ -2440,7 +2440,7 @@ impl Connection {
             moq_trace_emit_point(
                 moq_trace::PacketTracePoint::RxPacketDecrypted,
                 moq_trace::now_ns(),
-                moq_trace::Direction::Inbound,
+                moq_trace::Direction::Rx,
                 trace_packet_number,
                 trace_decrypt_space,
                 trace_decrypt_len,
@@ -2956,7 +2956,7 @@ impl Connection {
                     let trace_event = moq_trace::PacketEvent {
                         at_ns: moq_trace::now_ns(),
                         session_id: None,
-                        direction: moq_trace::Direction::Inbound,
+                        direction: moq_trace::Direction::Rx,
                         packet_number: Some(number),
                         packet_space: Some(moq_trace::PacketSpace::Data),
                         udp_len: Some(packet.header_data.len() + payload_len),

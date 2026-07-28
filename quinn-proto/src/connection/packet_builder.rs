@@ -205,7 +205,7 @@ impl PacketBuilder {
             moq_trace::global().emit_packet(moq_trace::Event::PacketStart(moq_trace::PacketEvent {
                 at_ns: moq_trace::now_ns(),
                 session_id: None,
-                direction: moq_trace::Direction::Outbound,
+                direction: moq_trace::Direction::Tx,
                 packet_number: Some(exact_number),
                 packet_space: Some(super::moq_trace_packet_space(space_id)),
                 udp_len: Some(0),
@@ -229,7 +229,7 @@ impl PacketBuilder {
             moq_trace::global().emit_packet(moq_trace::Event::PacketEnd(moq_trace::PacketEvent {
                 at_ns: moq_trace::now_ns(),
                 session_id: None,
-                direction: moq_trace::Direction::Outbound,
+                direction: moq_trace::Direction::Tx,
                 packet_number: Some(exact_number),
                 packet_space: Some(super::moq_trace_packet_space(space_id)),
                 udp_len: Some(size as usize),
@@ -303,7 +303,7 @@ impl PacketBuilder {
         super::moq_trace_emit_point(
             moq_trace::PacketTracePoint::TxPacketEncryptStart,
             moq_trace::now_ns(),
-            moq_trace::Direction::Outbound,
+            moq_trace::Direction::Tx,
             Some(self.exact_number),
             Some(self.space),
             Some(len),
@@ -323,7 +323,7 @@ impl PacketBuilder {
             super::moq_trace_emit_point(
                 moq_trace::PacketTracePoint::TxPacketEncrypted,
                 moq_trace::now_ns(),
-                moq_trace::Direction::Outbound,
+                moq_trace::Direction::Tx,
                 Some(self.exact_number),
                 Some(self.space),
                 Some(len),
