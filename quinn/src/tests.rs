@@ -1058,6 +1058,90 @@ async fn recv_stream_cancel_stop_drop() {
     );
 }
 
+#[cfg(feature = "moq-trace")]
+#[tokio::test]
+async fn trace_packet_lifecycle() {
+    use std::collections::HashMap;
+
+    let path = std::env::temp_dir().join(format!(
+        "quinn-moq-trace-{}-{}.jsonl",
+        std::process::id(),
+        moq_trace::now_ns(),
+    ));
+    let mut config = moq_trace::Config::default();
+    config.path = Some(path.clone());
+    let handle = moq_trace::Handle::new(config).unwrap();
+    moq_trace::set_global(handle.clone());
+
+    let endpoint = endpoint();
+    let (client, server) = tokio::join!(
+        endpoint
+            .connect(endpoint.local_addr().unwrap(), "localhost")
+            .unwrap(),
+        async { endpoint.accept().await.unwrap().await },
+    );
+    let client = client.unwrap();
+    let server = server.unwrap();
+
+    let mut send = client.open_uni().await.unwrap();
+    send.write_all(b"first").await.unwrap();
+    send.write_all(b"second").await.unwrap();
+    send.finish().unwrap();
+    let mut recv = server.accept_uni().await.unwrap();
+    assert_eq!(recv.read_to_end(usize::MAX).await.unwrap(), b"firstsecond");
+
+    client.close(0u32.into(), b"done");
+    server.close(0u32.into(), b"done");
+    endpoint.close(0u32.into(), b"done");
+    endpoint.wait_idle().await;
+    drop((send, recv, client, server, endpoint));
+    moq_trace::clear_global();
+    assert!(handle.flush());
+
+    let events: Vec<moq_trace::Event> = std::fs::read_to_string(&path)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let mut intervals = HashMap::<u64, (usize, usize)>::new();
+    for event in &events {
+        match event {
+            moq_trace::Event::PacketStart(packet) => {
+                assert_ne!(packet.connection_id, 0);
+                intervals.entry(packet.trace_id).or_default().0 += 1;
+            }
+            moq_trace::Event::PacketEnd(event) => {
+                assert_ne!(event.packet.connection_id, 0);
+                intervals.entry(event.packet.trace_id).or_default().1 += 1;
+            }
+            _ => {}
+        }
+    }
+
+    assert!(!intervals.is_empty());
+    assert!(intervals.values().all(|counts| *counts == (1, 1)));
+    assert!(events.iter().any(|event| matches!(
+        event,
+        moq_trace::Event::PacketPhase(moq_trace::PacketPhaseEvent {
+            phase: moq_trace::PacketPhase::HeaderUnprotect,
+            ..
+        })
+    )));
+    assert!(events.iter().any(|event| matches!(
+        event,
+        moq_trace::Event::PacketPhase(moq_trace::PacketPhaseEvent {
+            phase: moq_trace::PacketPhase::PayloadDecrypt,
+            ..
+        })
+    )));
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, moq_trace::Event::StreamFrame(_)))
+    );
+    std::fs::remove_file(path).unwrap();
+}
+
 #[derive(Default)]
 struct WakeCounter {
     wakes: AtomicUsize,

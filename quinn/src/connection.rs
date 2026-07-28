@@ -888,7 +888,7 @@ impl ConnectionRef {
         socket: Arc<dyn AsyncUdpSocket>,
         runtime: Arc<dyn Runtime>,
     ) -> Self {
-        Self(Arc::new(ConnectionInner {
+        let this = Self(Arc::new(ConnectionInner {
             state: Mutex::new(State {
                 inner: conn,
                 driver: None,
@@ -911,7 +911,17 @@ impl ConnectionRef {
                 buffered_transmit: None,
             }),
             shared: Shared::default(),
-        }))
+        }));
+        #[cfg(feature = "moq-trace")]
+        {
+            let connection_id =
+                u64::try_from(this.stable_id()).expect("Quinn stable connection IDs fit in u64");
+            let mut state = this.state.lock("ConnectionRef::new");
+            state
+                .inner
+                .set_moq_trace(moq_trace::global(), connection_id);
+        }
+        this
     }
 
     fn stable_id(&self) -> usize {
@@ -1036,44 +1046,21 @@ impl State {
 
             let len = t.size;
             #[cfg(feature = "moq-trace")]
-            let handle = moq_trace::global();
-            #[cfg(feature = "moq-trace")]
-            handle.emit_packet(moq_trace::Event::PacketPhase(moq_trace::PacketPhaseEvent {
-                point: moq_trace::PacketTracePoint::TxSocketIoStart,
-                packet: moq_trace::PacketEvent {
-                    at_ns: moq_trace::now_ns(),
-                    session_id: None,
-                    direction: moq_trace::Direction::Tx,
-                    packet_number: None,
-                    packet_space: None,
-                    udp_len: Some(len),
-                    stream_id: None,
-                    stream_offset_start: None,
-                    stream_offset_end: None,
-                    sample_rate: 0,
-                },
-            }));
+            let trace = self.inner.moq_trace_socket(moq_trace::Direction::Tx);
             let send_result = self
                 .socket
                 .try_send(&udp_transmit(&t, &self.send_buffer[..len]));
             #[cfg(feature = "moq-trace")]
-            {
-                let socket_done = moq_trace::now_ns();
-                handle.emit_packet(moq_trace::Event::PacketPhase(moq_trace::PacketPhaseEvent {
-                    point: moq_trace::PacketTracePoint::TxSocketIoDone,
-                    packet: moq_trace::PacketEvent {
-                        at_ns: socket_done,
-                        session_id: None,
-                        direction: moq_trace::Direction::Tx,
-                        packet_number: None,
-                        packet_space: None,
-                        udp_len: Some(len),
-                        stream_id: None,
-                        stream_offset_start: None,
-                        stream_offset_end: None,
-                        sample_rate: 0,
-                    },
-                }));
+            if let Some(trace) = trace {
+                let outcome = match &send_result {
+                    Ok(()) => moq_trace::SocketOutcome::Success,
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                        moq_trace::SocketOutcome::WouldBlock
+                    }
+                    Err(_) => moq_trace::SocketOutcome::Error,
+                };
+                let datagrams = t.segment_size.map_or(1, |size| len.div_ceil(size));
+                trace.finish(outcome, moq_trace::SocketStats::new(1, datagrams, len));
             }
             let retry = match send_result {
                 Ok(()) => false,

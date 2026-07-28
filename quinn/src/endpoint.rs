@@ -743,6 +743,31 @@ struct RecvState {
     connections: ConnectionSet,
     recv_buf: Box<[u8]>,
     recv_limiter: WorkLimiter,
+    #[cfg(feature = "moq-trace")]
+    trace: moq_trace::Handle,
+}
+
+#[cfg(feature = "moq-trace")]
+fn recv_socket_stats(metas: &[RecvMeta]) -> moq_trace::SocketStats {
+    moq_trace::SocketStats::new(
+        metas.len(),
+        metas
+            .iter()
+            .map(|meta| meta.len.div_ceil(meta.stride.max(1)))
+            .sum(),
+        metas.iter().map(|meta| meta.len).sum(),
+    )
+}
+
+#[cfg(feature = "moq-trace")]
+fn finish_socket(
+    trace: Option<moq_trace::SocketTrace>,
+    outcome: moq_trace::SocketOutcome,
+    stats: moq_trace::SocketStats,
+) {
+    if let Some(trace) = trace {
+        trace.finish(outcome, stats);
+    }
 }
 
 impl RecvState {
@@ -766,6 +791,8 @@ impl RecvState {
             incoming: VecDeque::new(),
             recv_buf: recv_buf.into(),
             recv_limiter: WorkLimiter::new(RECV_TIME_BOUND),
+            #[cfg(feature = "moq-trace")]
+            trace: moq_trace::global(),
         }
     }
 
@@ -792,44 +819,15 @@ impl RecvState {
         };
         loop {
             #[cfg(feature = "moq-trace")]
-            let handle = moq_trace::global();
-            #[cfg(feature = "moq-trace")]
-            handle.emit_packet(moq_trace::Event::PacketPhase(moq_trace::PacketPhaseEvent {
-                point: moq_trace::PacketTracePoint::RxSocketIoStart,
-                packet: moq_trace::PacketEvent {
-                    at_ns: moq_trace::now_ns(),
-                    session_id: None,
-                    direction: moq_trace::Direction::Rx,
-                    packet_number: None,
-                    packet_space: None,
-                    udp_len: None,
-                    stream_id: None,
-                    stream_offset_start: None,
-                    stream_offset_end: None,
-                    sample_rate: 0,
-                },
-            }));
+            let trace = self.trace.socket(moq_trace::Direction::Rx, None);
             match socket.poll_recv(cx, &mut iovs, &mut metas) {
                 Poll::Ready(Ok(msgs)) => {
                     #[cfg(feature = "moq-trace")]
-                    {
-                        let udp_len = metas.iter().take(msgs).map(|meta| meta.len).sum();
-                        handle.emit_packet(moq_trace::Event::PacketPhase(moq_trace::PacketPhaseEvent {
-                            point: moq_trace::PacketTracePoint::RxSocketIoDone,
-                            packet: moq_trace::PacketEvent {
-                                at_ns: moq_trace::now_ns(),
-                                session_id: None,
-                                direction: moq_trace::Direction::Rx,
-                                packet_number: None,
-                                packet_space: None,
-                                udp_len: Some(udp_len),
-                                stream_id: None,
-                                stream_offset_start: None,
-                                stream_offset_end: None,
-                                sample_rate: 0,
-                            },
-                        }));
-                    }
+                    finish_socket(
+                        trace,
+                        moq_trace::SocketOutcome::Success,
+                        recv_socket_stats(&metas[..msgs]),
+                    );
                     self.recv_limiter.record_work(msgs);
                     for (meta, buf) in metas.iter().zip(iovs.iter()).take(msgs) {
                         let mut data: BytesMut = buf[0..meta.len].into();
@@ -873,21 +871,11 @@ impl RecvState {
                 }
                 Poll::Pending => {
                     #[cfg(feature = "moq-trace")]
-                    handle.emit_packet(moq_trace::Event::PacketPhase(moq_trace::PacketPhaseEvent {
-                        point: moq_trace::PacketTracePoint::RxSocketIoDone,
-                        packet: moq_trace::PacketEvent {
-                            at_ns: moq_trace::now_ns(),
-                            session_id: None,
-                            direction: moq_trace::Direction::Rx,
-                            packet_number: None,
-                            packet_space: None,
-                            udp_len: None,
-                            stream_id: None,
-                            stream_offset_start: None,
-                            stream_offset_end: None,
-                            sample_rate: 0,
-                        },
-                    }));
+                    finish_socket(
+                        trace,
+                        moq_trace::SocketOutcome::Pending,
+                        moq_trace::SocketStats::default(),
+                    );
                     return Ok(PollProgress {
                         received_connection_packet,
                         keep_going: false,
@@ -897,40 +885,20 @@ impl RecvState {
                 // attacker
                 Poll::Ready(Err(ref e)) if e.kind() == io::ErrorKind::ConnectionReset => {
                     #[cfg(feature = "moq-trace")]
-                    handle.emit_packet(moq_trace::Event::PacketPhase(moq_trace::PacketPhaseEvent {
-                        point: moq_trace::PacketTracePoint::RxSocketIoDone,
-                        packet: moq_trace::PacketEvent {
-                            at_ns: moq_trace::now_ns(),
-                            session_id: None,
-                            direction: moq_trace::Direction::Rx,
-                            packet_number: None,
-                            packet_space: None,
-                            udp_len: None,
-                            stream_id: None,
-                            stream_offset_start: None,
-                            stream_offset_end: None,
-                            sample_rate: 0,
-                        },
-                    }));
+                    finish_socket(
+                        trace,
+                        moq_trace::SocketOutcome::ConnectionReset,
+                        moq_trace::SocketStats::default(),
+                    );
                     continue;
                 }
                 Poll::Ready(Err(e)) => {
                     #[cfg(feature = "moq-trace")]
-                    handle.emit_packet(moq_trace::Event::PacketPhase(moq_trace::PacketPhaseEvent {
-                        point: moq_trace::PacketTracePoint::RxSocketIoDone,
-                        packet: moq_trace::PacketEvent {
-                            at_ns: moq_trace::now_ns(),
-                            session_id: None,
-                            direction: moq_trace::Direction::Rx,
-                            packet_number: None,
-                            packet_space: None,
-                            udp_len: None,
-                            stream_id: None,
-                            stream_offset_start: None,
-                            stream_offset_end: None,
-                            sample_rate: 0,
-                        },
-                    }));
+                    finish_socket(
+                        trace,
+                        moq_trace::SocketOutcome::Error,
+                        moq_trace::SocketStats::default(),
+                    );
                     return Err(e);
                 }
             }
@@ -961,4 +929,30 @@ struct PollProgress {
     received_connection_packet: bool,
     /// Whether datagram handling was interrupted early by the work limiter for fairness
     keep_going: bool,
+}
+
+#[cfg(all(test, feature = "moq-trace"))]
+mod moq_trace_tests {
+    use super::*;
+
+    #[test]
+    fn recv_stats_count_gro_datagrams() {
+        let metas = [
+            RecvMeta {
+                len: 3000,
+                stride: 1200,
+                ..RecvMeta::default()
+            },
+            RecvMeta {
+                len: 800,
+                stride: 1200,
+                ..RecvMeta::default()
+            },
+        ];
+
+        assert_eq!(
+            recv_socket_stats(&metas),
+            moq_trace::SocketStats::new(2, 4, 3800),
+        );
+    }
 }
