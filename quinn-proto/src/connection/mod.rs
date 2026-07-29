@@ -48,10 +48,8 @@ pub(super) fn moq_trace_packet_space(space: SpaceId) -> moq_trace::PacketSpace {
 }
 
 #[cfg(feature = "moq-trace")]
-fn moq_trace_finish(trace: &mut Option<moq_trace::PacketTrace>, outcome: moq_trace::PacketOutcome) {
-    if let Some(trace) = trace.take() {
-        trace.finish(outcome);
-    }
+fn moq_trace_finish(trace: &mut moq_trace::PacketTrace, outcome: moq_trace::PacketOutcome) {
+    std::mem::replace(trace, moq_trace::PacketTrace::disabled()).finish(outcome);
 }
 
 mod ack_frequency;
@@ -1156,15 +1154,18 @@ impl Connection {
                 let data_len = first_decode.len();
 
                 #[cfg(feature = "moq-trace")]
-                let trace = self.moq_trace_connection_id.and_then(|connection_id| {
-                    let mut context =
-                        moq_trace::PacketContext::new(connection_id, moq_trace::Direction::Rx)
-                            .with_byte_len(first_decode.len());
-                    if let Some(space) = first_decode.space() {
-                        context = context.with_space(moq_trace_packet_space(space));
-                    }
-                    self.moq_trace.packet(context)
-                });
+                let trace = self.moq_trace_connection_id.map_or_else(
+                    moq_trace::PacketTrace::disabled,
+                    |connection_id| {
+                        let mut context =
+                            moq_trace::PacketContext::new(moq_trace::Direction::Rx, connection_id)
+                                .with_byte_len(first_decode.len());
+                        if let Some(space) = first_decode.space() {
+                            context = context.with_space(moq_trace_packet_space(space));
+                        }
+                        self.moq_trace.packet(context)
+                    },
+                );
                 self.handle_decode(
                     now,
                     remote,
@@ -2075,7 +2076,7 @@ impl Connection {
             Some(packet_number),
             packet.into(),
             #[cfg(feature = "moq-trace")]
-            None,
+            &moq_trace::PacketTrace::disabled(),
         )?;
         if let Some(data) = remaining {
             self.handle_coalesced(now, remote, ecn, data);
@@ -2273,16 +2274,17 @@ impl Connection {
         let mut remaining = Some(data);
         while let Some(data) = remaining {
             #[cfg(feature = "moq-trace")]
-            let mut trace = self.moq_trace_connection_id.and_then(|connection_id| {
-                self.moq_trace.packet(
-                    moq_trace::PacketContext::new(connection_id, moq_trace::Direction::Rx)
-                        .with_byte_len(data.len()),
-                )
-            });
+            let mut trace = self.moq_trace_connection_id.map_or_else(
+                moq_trace::PacketTrace::disabled,
+                |connection_id| {
+                    self.moq_trace.packet(
+                        moq_trace::PacketContext::new(moq_trace::Direction::Rx, connection_id)
+                            .with_byte_len(data.len()),
+                    )
+                },
+            );
             #[cfg(feature = "moq-trace")]
-            let parse_trace = trace
-                .as_ref()
-                .map(|trace| trace.phase(moq_trace::PacketPhase::HeaderParse));
+            let parse_trace = trace.phase(moq_trace::PacketPhase::HeaderParse);
             match PartialDecode::new(
                 data,
                 &FixedLengthConnectionIdParser::new(self.local_cid_state.cid_len()),
@@ -2292,15 +2294,11 @@ impl Connection {
                 Ok((partial_decode, rest)) => {
                     #[cfg(feature = "moq-trace")]
                     {
-                        if let Some(parse_trace) = parse_trace {
-                            parse_trace.finish(moq_trace::PacketOutcome::Success);
+                        parse_trace.finish(moq_trace::PacketOutcome::Success);
+                        if let Some(space) = partial_decode.space() {
+                            trace.set_space(moq_trace_packet_space(space));
                         }
-                        if let Some(trace) = trace.as_mut() {
-                            if let Some(space) = partial_decode.space() {
-                                trace.set_space(moq_trace_packet_space(space));
-                            }
-                            trace.set_byte_len(partial_decode.len());
-                        }
+                        trace.set_byte_len(partial_decode.len());
                     }
                     remaining = rest;
                     self.handle_decode(
@@ -2315,9 +2313,7 @@ impl Connection {
                 Err(e) => {
                     #[cfg(feature = "moq-trace")]
                     {
-                        if let Some(parse_trace) = parse_trace {
-                            parse_trace.finish(moq_trace::PacketOutcome::Malformed);
-                        }
+                        parse_trace.finish(moq_trace::PacketOutcome::Malformed);
                         moq_trace_finish(&mut trace, moq_trace::PacketOutcome::Malformed);
                     }
                     trace!("malformed header: {}", e);
@@ -2333,12 +2329,10 @@ impl Connection {
         remote: SocketAddr,
         ecn: Option<EcnCodepoint>,
         partial_decode: PartialDecode,
-        #[cfg(feature = "moq-trace")] mut trace: Option<moq_trace::PacketTrace>,
+        #[cfg(feature = "moq-trace")] mut trace: moq_trace::PacketTrace,
     ) {
         #[cfg(feature = "moq-trace")]
-        let unprotect_trace = trace
-            .as_ref()
-            .map(|trace| trace.phase(moq_trace::PacketPhase::HeaderUnprotect));
+        let unprotect_trace = trace.phase(moq_trace::PacketPhase::HeaderUnprotect);
         let decoded = packet_crypto::unprotect_header(
             partial_decode,
             &self.spaces,
@@ -2346,12 +2340,10 @@ impl Connection {
             self.peer_params.stateless_reset_token,
         );
         #[cfg(feature = "moq-trace")]
-        if let Some(unprotect_trace) = unprotect_trace {
-            unprotect_trace.finish(match &decoded {
-                Some(_) => moq_trace::PacketOutcome::Success,
-                None => moq_trace::PacketOutcome::Dropped,
-            });
-        }
+        unprotect_trace.finish(match &decoded {
+            Some(_) => moq_trace::PacketOutcome::Success,
+            None => moq_trace::PacketOutcome::Dropped,
+        });
         if let Some(decoded) = decoded {
             self.handle_packet(
                 now,
@@ -2375,7 +2367,7 @@ impl Connection {
         ecn: Option<EcnCodepoint>,
         packet: Option<Packet>,
         stateless_reset: bool,
-        #[cfg(feature = "moq-trace")] mut trace: Option<moq_trace::PacketTrace>,
+        #[cfg(feature = "moq-trace")] mut trace: moq_trace::PacketTrace,
     ) {
         self.stats.udp_rx.ios += 1;
         if let Some(ref packet) = packet {
@@ -2399,9 +2391,7 @@ impl Connection {
         let was_drained = self.state.is_drained();
 
         #[cfg(feature = "moq-trace")]
-        let decrypt_trace = trace
-            .as_ref()
-            .map(|trace| trace.phase(moq_trace::PacketPhase::PayloadDecrypt));
+        let decrypt_trace = trace.phase(moq_trace::PacketPhase::PayloadDecrypt);
         let decrypted = match packet {
             None => Err(None),
             Some(mut packet) => self
@@ -2410,17 +2400,13 @@ impl Connection {
         };
         #[cfg(feature = "moq-trace")]
         {
-            if let Some(decrypt_trace) = decrypt_trace {
-                decrypt_trace.finish(match &decrypted {
-                    Ok(_) => moq_trace::PacketOutcome::Success,
-                    Err(None) => moq_trace::PacketOutcome::AuthenticationFailed,
-                    Err(Some(_)) => moq_trace::PacketOutcome::Malformed,
-                });
-            }
+            decrypt_trace.finish(match &decrypted {
+                Ok(_) => moq_trace::PacketOutcome::Success,
+                Err(None) => moq_trace::PacketOutcome::AuthenticationFailed,
+                Err(Some(_)) => moq_trace::PacketOutcome::Malformed,
+            });
             if let Ok((_, Some(number))) = &decrypted {
-                if let Some(trace) = trace.as_mut() {
-                    trace.set_number(*number);
-                }
+                trace.set_number(*number);
             }
         }
         let result = match decrypted {
@@ -2505,7 +2491,7 @@ impl Connection {
                         number,
                         packet,
                         #[cfg(feature = "moq-trace")]
-                        trace.as_ref(),
+                        &trace,
                     )
                 }
             }
@@ -2576,7 +2562,7 @@ impl Connection {
         remote: SocketAddr,
         number: Option<u64>,
         packet: Packet,
-        #[cfg(feature = "moq-trace")] trace: Option<&moq_trace::PacketTrace>,
+        #[cfg(feature = "moq-trace")] trace: &moq_trace::PacketTrace,
     ) -> Result<(), ConnectionError> {
         let state = match self.state {
             State::Established => {
@@ -2908,7 +2894,7 @@ impl Connection {
         remote: SocketAddr,
         number: u64,
         packet: Packet,
-        #[cfg(feature = "moq-trace")] trace: Option<&moq_trace::PacketTrace>,
+        #[cfg(feature = "moq-trace")] trace: &moq_trace::PacketTrace,
     ) -> Result<(), TransportError> {
         let payload = packet.payload.freeze();
         let mut is_probing_packet = true;
@@ -2969,8 +2955,7 @@ impl Connection {
                 }
                 Frame::Stream(frame) => {
                     #[cfg(feature = "moq-trace")]
-                    let frame_trace =
-                        trace.map(|trace| trace.phase(moq_trace::PacketPhase::FrameProcess));
+                    let frame_trace = trace.phase(moq_trace::PacketPhase::FrameProcess);
                     #[cfg(feature = "moq-trace")]
                     let stream_frame = moq_trace::StreamFrame::new(
                         frame.id.0,
@@ -2979,24 +2964,20 @@ impl Connection {
                     );
                     let received = self.streams.received(frame, payload_len);
                     #[cfg(feature = "moq-trace")]
-                    if let Some(frame_trace) = frame_trace {
-                        frame_trace.finish(if received.is_ok() {
+                    frame_trace.finish(if received.is_ok() {
+                        moq_trace::PacketOutcome::Success
+                    } else {
+                        moq_trace::PacketOutcome::Malformed
+                    });
+                    #[cfg(feature = "moq-trace")]
+                    trace.stream_frame(
+                        stream_frame,
+                        if received.is_ok() {
                             moq_trace::PacketOutcome::Success
                         } else {
                             moq_trace::PacketOutcome::Malformed
-                        });
-                    }
-                    #[cfg(feature = "moq-trace")]
-                    if let Some(trace) = trace {
-                        trace.stream_frame(
-                            stream_frame,
-                            if received.is_ok() {
-                                moq_trace::PacketOutcome::Success
-                            } else {
-                                moq_trace::PacketOutcome::Malformed
-                            },
-                        );
-                    }
+                        },
+                    );
                     if received?.should_transmit() {
                         self.spaces[SpaceId::Data].pending.max_data = true;
                     }

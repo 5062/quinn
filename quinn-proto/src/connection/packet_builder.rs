@@ -26,9 +26,9 @@ pub(super) struct PacketBuilder {
     pub(super) tag_len: usize,
     pub(super) _span: tracing::span::EnteredSpan,
     #[cfg(feature = "moq-trace")]
-    trace: Option<moq_trace::PacketTrace>,
+    trace: moq_trace::PacketTrace,
     #[cfg(feature = "moq-trace")]
-    encode_trace: Option<moq_trace::PacketPhaseTrace>,
+    encode_trace: moq_trace::PacketPhaseTrace,
 }
 
 impl PacketBuilder {
@@ -160,17 +160,18 @@ impl PacketBuilder {
         debug_assert!(max_size >= min_size);
 
         #[cfg(feature = "moq-trace")]
-        let trace = conn.moq_trace_connection_id.and_then(|connection_id| {
-            conn.moq_trace.packet(
-                moq_trace::PacketContext::new(connection_id, moq_trace::Direction::Tx)
-                    .with_number(exact_number)
-                    .with_space(super::moq_trace_packet_space(space_id)),
-            )
-        });
+        let trace = conn.moq_trace_connection_id.map_or_else(
+            moq_trace::PacketTrace::disabled,
+            |connection_id| {
+                conn.moq_trace.packet(
+                    moq_trace::PacketContext::new(moq_trace::Direction::Tx, connection_id)
+                        .with_number(exact_number)
+                        .with_space(super::moq_trace_packet_space(space_id)),
+                )
+            },
+        );
         #[cfg(feature = "moq-trace")]
-        let encode_trace = trace
-            .as_ref()
-            .map(|trace| trace.phase(moq_trace::PacketPhase::FrameEncode));
+        let encode_trace = trace.phase(moq_trace::PacketPhase::FrameEncode);
 
         Some(Self {
             datagram_start,
@@ -256,11 +257,11 @@ impl PacketBuilder {
 
     /// Encrypt packet, returning the length of the packet and whether padding was added
     pub(super) fn finish(
-        mut self,
+        self,
         conn: &mut Connection,
         now: Instant,
         buffer: &mut Vec<u8>,
-        sent: Option<&SentFrames>,
+        _sent: Option<&SentFrames>,
     ) -> (usize, bool) {
         let pad = buffer.len() < self.min_size;
         if pad {
@@ -288,19 +289,14 @@ impl PacketBuilder {
         let encode_start = self.partial_encode.start;
         let len = buffer.len() - encode_start;
         #[cfg(feature = "moq-trace")]
+        let mut trace = self.trace;
+        #[cfg(feature = "moq-trace")]
         {
-            if let Some(encode_trace) = self.encode_trace.take() {
-                encode_trace.finish(moq_trace::PacketOutcome::Success);
-            }
-            if let Some(trace) = self.trace.as_mut() {
-                trace.set_byte_len(len);
-            }
+            self.encode_trace.finish(moq_trace::PacketOutcome::Success);
+            trace.set_byte_len(len);
         }
         #[cfg(feature = "moq-trace")]
-        let encrypt_trace = self
-            .trace
-            .as_ref()
-            .map(|trace| trace.phase(moq_trace::PacketPhase::PacketEncrypt));
+        let encrypt_trace = trace.phase(moq_trace::PacketPhase::PacketEncrypt);
         let packet_buf = &mut buffer[encode_start..];
         self.partial_encode.finish(
             packet_buf,
@@ -310,24 +306,20 @@ impl PacketBuilder {
 
         #[cfg(feature = "moq-trace")]
         {
-            if let Some(encrypt_trace) = encrypt_trace {
-                encrypt_trace.finish(moq_trace::PacketOutcome::Success);
-            }
-            if let Some(trace) = self.trace.take() {
-                if let Some(sent) = sent {
-                    for frame in &sent.stream_frames {
-                        trace.stream_frame(
-                            moq_trace::StreamFrame::new(
-                                frame.id.0,
-                                frame.offsets.start,
-                                frame.offsets.end,
-                            ),
-                            moq_trace::PacketOutcome::Success,
-                        );
-                    }
+            encrypt_trace.finish(moq_trace::PacketOutcome::Success);
+            if let Some(sent) = _sent {
+                for frame in &sent.stream_frames {
+                    trace.stream_frame(
+                        moq_trace::StreamFrame::new(
+                            frame.id.0,
+                            frame.offsets.start,
+                            frame.offsets.end,
+                        ),
+                        moq_trace::PacketOutcome::Success,
+                    );
                 }
-                trace.finish(moq_trace::PacketOutcome::Success);
             }
+            trace.finish(moq_trace::PacketOutcome::Success);
         }
         conn.config.qlog_sink.emit_packet_sent(
             self.exact_number,
