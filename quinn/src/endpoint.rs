@@ -854,12 +854,14 @@ impl RecvState {
                                 Some(DatagramEvent::ConnectionEvent(handle, event)) => {
                                     // Ignoring errors from dropped connections that haven't yet been cleaned up
                                     received_connection_packet = true;
-                                    let _ = self
-                                        .connections
-                                        .senders
-                                        .get_mut(&handle)
-                                        .unwrap()
-                                        .send(ConnectionEvent::Proto(event));
+                                    let sender = self.connections.senders.get_mut(&handle).unwrap();
+                                    #[cfg(feature = "moq-trace")]
+                                    let event = {
+                                        let mut event = event;
+                                        event.record_moq_trace_enqueued(moq_trace::now_ns());
+                                        event
+                                    };
+                                    let _ = sender.send(ConnectionEvent::Proto(event));
                                 }
                                 Some(DatagramEvent::Response(transmit)) => {
                                     respond(transmit, &response_buffer, socket);

@@ -1138,7 +1138,11 @@ impl Connection {
                 ecn,
                 first_decode,
                 remaining,
+                #[cfg(feature = "moq-trace")]
+                    moq_trace: trace_timing,
             }) => {
+                #[cfg(feature = "moq-trace")]
+                let handling_ns = moq_trace::now_ns();
                 // If this packet could initiate a migration and we're a client or a server that
                 // forbids migration, drop the datagram. This could be relaxed to heuristically
                 // permit NAT-rebinding-like migration.
@@ -1159,13 +1163,36 @@ impl Connection {
                     |connection_id| {
                         let mut context =
                             moq_trace::PacketContext::new(moq_trace::Direction::Rx, connection_id)
-                                .with_byte_len(first_decode.len());
+                                .with_byte_len(first_decode.len())
+                                .with_start_ns(trace_timing.start_ns);
                         if let Some(space) = first_decode.space() {
                             context = context.with_space(moq_trace_packet_space(space));
                         }
                         self.moq_trace.packet(context)
                     },
                 );
+                #[cfg(feature = "moq-trace")]
+                {
+                    // These intervals completed before a stable connection trace ID was available.
+                    // Emit them together now while preserving their original timestamps.
+                    trace
+                        .phase_at(moq_trace::PacketPhase::HeaderParse, trace_timing.start_ns)
+                        .finish_at(
+                            moq_trace::PacketOutcome::Success,
+                            trace_timing.header_parse_end_ns,
+                        );
+                    if let Some(enqueued_ns) = trace_timing.enqueued_ns {
+                        trace
+                            .phase_at(
+                                moq_trace::PacketPhase::Routing,
+                                trace_timing.header_parse_end_ns,
+                            )
+                            .finish_at(moq_trace::PacketOutcome::Success, enqueued_ns);
+                        trace
+                            .phase_at(moq_trace::PacketPhase::Scheduling, enqueued_ns)
+                            .finish_at(moq_trace::PacketOutcome::Success, handling_ns);
+                    }
+                }
                 self.handle_decode(
                     now,
                     remote,

@@ -154,19 +154,31 @@ impl Endpoint {
     ) -> Option<DatagramEvent> {
         // Partially decode packet or short-circuit if unable
         let datagram_len = data.len();
+        #[cfg(feature = "moq-trace")]
+        let packet_start_ns = moq_trace::now_ns();
         let event = match PartialDecode::new(
             data,
             &FixedLengthConnectionIdParser::new(self.local_cid_generator.cid_len()),
             &self.config.supported_versions,
             self.config.grease_quic_bit,
         ) {
-            Ok((first_decode, remaining)) => DatagramConnectionEvent {
-                now,
-                remote,
-                ecn,
-                first_decode,
-                remaining,
-            },
+            Ok((first_decode, remaining)) => {
+                #[cfg(feature = "moq-trace")]
+                let moq_trace = crate::shared::DatagramTrace {
+                    start_ns: packet_start_ns,
+                    header_parse_end_ns: moq_trace::now_ns(),
+                    enqueued_ns: None,
+                };
+                DatagramConnectionEvent {
+                    now,
+                    remote,
+                    ecn,
+                    first_decode,
+                    remaining,
+                    #[cfg(feature = "moq-trace")]
+                    moq_trace,
+                }
+            }
             Err(PacketDecodeError::UnsupportedVersion {
                 src_cid,
                 dst_cid,
