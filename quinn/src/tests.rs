@@ -1123,6 +1123,20 @@ async fn trace_packet_lifecycle() {
     assert!(events.iter().any(|event| matches!(
         event,
         moq_trace::Event::PacketPhase(moq_trace::PacketPhaseEvent {
+            phase: moq_trace::PacketPhase::Routing,
+            ..
+        })
+    )));
+    assert!(events.iter().any(|event| matches!(
+        event,
+        moq_trace::Event::PacketPhase(moq_trace::PacketPhaseEvent {
+            phase: moq_trace::PacketPhase::Scheduling,
+            ..
+        })
+    )));
+    assert!(events.iter().any(|event| matches!(
+        event,
+        moq_trace::Event::PacketPhase(moq_trace::PacketPhaseEvent {
             phase: moq_trace::PacketPhase::HeaderUnprotect,
             ..
         })
