@@ -90,6 +90,18 @@ impl PacketBuilder {
 
         let span = trace_span!("send", space = ?space_id, pn = exact_number).entered();
 
+        #[cfg(feature = "moq-trace")]
+        let trace = conn.moq_trace_connection_id.map_or_else(
+            moq_trace::PacketTrace::disabled,
+            |connection_id| {
+                conn.moq_trace.packet(
+                    moq_trace::PacketContext::new(moq_trace::Direction::Tx, connection_id)
+                        .with_number(exact_number)
+                        .with_space(super::moq_trace_packet_space(space_id)),
+                )
+            },
+        );
+
         let number = PacketNumber::new(exact_number, space.largest_acked_packet.unwrap_or(0));
         let header = match space_id {
             SpaceId::Data if space.crypto.is_some() => Header::Short {
@@ -159,17 +171,6 @@ impl PacketBuilder {
         let max_size = buffer_capacity - tag_len;
         debug_assert!(max_size >= min_size);
 
-        #[cfg(feature = "moq-trace")]
-        let trace = conn.moq_trace_connection_id.map_or_else(
-            moq_trace::PacketTrace::disabled,
-            |connection_id| {
-                conn.moq_trace.packet(
-                    moq_trace::PacketContext::new(moq_trace::Direction::Tx, connection_id)
-                        .with_number(exact_number)
-                        .with_space(super::moq_trace_packet_space(space_id)),
-                )
-            },
-        );
         #[cfg(feature = "moq-trace")]
         let encode_trace = trace.phase(moq_trace::PacketPhase::FrameEncode);
 
