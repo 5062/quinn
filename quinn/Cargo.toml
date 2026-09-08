@@ -58,7 +58,7 @@ async-std = { workspace = true, optional = true }
 bytes = { workspace = true }
 # Enables futures::io::{AsyncRead, AsyncWrite} support for streams
 futures-io = { workspace = true, optional = true }
-moq-trace = { version = "0.1", optional = true }
+moq-trace = { version = "0.1", optional = true, default-features = false }
 rustc-hash = { workspace = true }
 pin-project-lite = { workspace = true }
 proto = { package = "quinn-proto", path = "../quinn-proto", version = "0.11.15", default-features = false }
