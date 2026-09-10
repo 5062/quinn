@@ -759,17 +759,6 @@ fn recv_socket_stats(metas: &[RecvMeta]) -> moq_trace::SocketStats {
     )
 }
 
-#[cfg(feature = "moq-trace")]
-fn finish_socket(
-    trace: Option<moq_trace::SocketTrace>,
-    outcome: moq_trace::SocketOutcome,
-    stats: moq_trace::SocketStats,
-) {
-    if let Some(trace) = trace {
-        trace.finish(outcome, stats);
-    }
-}
-
 impl RecvState {
     fn new(
         sender: mpsc::UnboundedSender<(ConnectionHandle, EndpointEvent)>,
@@ -823,8 +812,7 @@ impl RecvState {
             match socket.poll_recv(cx, &mut iovs, &mut metas) {
                 Poll::Ready(Ok(msgs)) => {
                     #[cfg(feature = "moq-trace")]
-                    finish_socket(
-                        trace,
+                    trace.finish(
                         moq_trace::SocketOutcome::Success,
                         recv_socket_stats(&metas[..msgs]),
                     );
@@ -873,8 +861,7 @@ impl RecvState {
                 }
                 Poll::Pending => {
                     #[cfg(feature = "moq-trace")]
-                    finish_socket(
-                        trace,
+                    trace.finish(
                         moq_trace::SocketOutcome::Pending,
                         moq_trace::SocketStats::default(),
                     );
@@ -887,8 +874,7 @@ impl RecvState {
                 // attacker
                 Poll::Ready(Err(ref e)) if e.kind() == io::ErrorKind::ConnectionReset => {
                     #[cfg(feature = "moq-trace")]
-                    finish_socket(
-                        trace,
+                    trace.finish(
                         moq_trace::SocketOutcome::ConnectionReset,
                         moq_trace::SocketStats::default(),
                     );
@@ -896,8 +882,7 @@ impl RecvState {
                 }
                 Poll::Ready(Err(e)) => {
                     #[cfg(feature = "moq-trace")]
-                    finish_socket(
-                        trace,
+                    trace.finish(
                         moq_trace::SocketOutcome::Error,
                         moq_trace::SocketStats::default(),
                     );

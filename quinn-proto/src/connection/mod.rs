@@ -399,10 +399,7 @@ impl Connection {
 
     /// Start a sampled socket operation for this connection.
     #[cfg(feature = "moq-trace")]
-    pub fn moq_trace_socket(
-        &self,
-        direction: moq_trace::Direction,
-    ) -> Option<moq_trace::SocketTrace> {
+    pub fn moq_trace_socket(&self, direction: moq_trace::Direction) -> moq_trace::SocketTrace {
         self.moq_trace
             .socket(direction, self.moq_trace_connection_id)
     }
