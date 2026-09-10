@@ -1051,7 +1051,7 @@ impl State {
                 .socket
                 .try_send(&udp_transmit(&t, &self.send_buffer[..len]));
             #[cfg(feature = "moq-trace")]
-            if let Some(trace) = trace {
+            {
                 let outcome = match &send_result {
                     Ok(()) => moq_trace::SocketOutcome::Success,
                     Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
