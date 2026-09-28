@@ -586,6 +586,23 @@ impl Connection {
         self.0.stable_id()
     }
 
+    /// The identifier this connection's `quic_trace:*` events carry
+    ///
+    /// Unlike [`Self::stable_id`], it is never reused within the process, so an
+    /// application that tags its own trace events with it pairs them with this
+    /// connection's packets even after other connections come and go. Returns
+    /// `None` when the `moq-trace` feature is off, because no events carry it.
+    pub fn trace_connection_id(&self) -> Option<u64> {
+        #[cfg(feature = "moq-trace")]
+        {
+            Some(self.0.trace_connection_id)
+        }
+        #[cfg(not(feature = "moq-trace"))]
+        {
+            None
+        }
+    }
+
     /// Update traffic keys spontaneously
     ///
     /// This primarily exists for testing purposes.
@@ -911,11 +928,15 @@ impl ConnectionRef {
                 buffered_transmit: None,
             }),
             shared: Shared::default(),
+            #[cfg(feature = "moq-trace")]
+            trace_connection_id: moq_trace::next_connection_id(),
         }));
+        // `stable_id` is an address the allocator can reuse once this connection is
+        // freed, so a trace would join a later connection's packets to this one's
+        // objects. The toolkit counter never reuses a value.
         #[cfg(feature = "moq-trace")]
         {
-            let connection_id =
-                u64::try_from(this.stable_id()).expect("Quinn stable connection IDs fit in u64");
+            let connection_id = this.trace_connection_id;
             let mut state = this.state.lock("ConnectionRef::new");
             state
                 .inner
@@ -965,6 +986,9 @@ impl std::ops::Deref for ConnectionRef {
 pub(crate) struct ConnectionInner {
     pub(crate) state: Mutex<State>,
     pub(crate) shared: Shared,
+    /// Transport trace identity, allocated once and never reused in the process.
+    #[cfg(feature = "moq-trace")]
+    trace_connection_id: u64,
 }
 
 #[derive(Debug, Default)]
