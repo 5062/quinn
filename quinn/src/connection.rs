@@ -590,17 +590,9 @@ impl Connection {
     ///
     /// Unlike [`Self::stable_id`], it is never reused within the process, so an
     /// application that tags its own trace events with it pairs them with this
-    /// connection's packets even after other connections come and go. Returns
-    /// `None` when the `moq-trace` feature is off, because no events carry it.
+    /// connection's packets even after other connections come and go.
     pub fn trace_connection_id(&self) -> Option<u64> {
-        #[cfg(feature = "moq-trace")]
-        {
-            Some(self.0.trace_connection_id)
-        }
-        #[cfg(not(feature = "moq-trace"))]
-        {
-            None
-        }
+        Some(self.0.trace_connection_id)
     }
 
     /// Update traffic keys spontaneously
@@ -928,13 +920,11 @@ impl ConnectionRef {
                 buffered_transmit: None,
             }),
             shared: Shared::default(),
-            #[cfg(feature = "moq-trace")]
             trace_connection_id: moq_trace::next_connection_id(),
         }));
         // `stable_id` is an address the allocator can reuse once this connection is
         // freed, so a trace would join a later connection's packets to this one's
         // objects. The toolkit counter never reuses a value.
-        #[cfg(feature = "moq-trace")]
         {
             let connection_id = this.trace_connection_id;
             let mut state = this.state.lock("ConnectionRef::new");
@@ -987,7 +977,6 @@ pub(crate) struct ConnectionInner {
     pub(crate) state: Mutex<State>,
     pub(crate) shared: Shared,
     /// Transport trace identity, allocated once and never reused in the process.
-    #[cfg(feature = "moq-trace")]
     trace_connection_id: u64,
 }
 
@@ -1069,12 +1058,10 @@ impl State {
             }
 
             let len = t.size;
-            #[cfg(feature = "moq-trace")]
             let trace = self.inner.moq_trace_socket(moq_trace::Direction::Tx);
             let send_result = self
                 .socket
                 .try_send(&udp_transmit(&t, &self.send_buffer[..len]));
-            #[cfg(feature = "moq-trace")]
             {
                 let outcome = match &send_result {
                     Ok(()) => moq_trace::SocketOutcome::Success,

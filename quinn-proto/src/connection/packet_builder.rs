@@ -25,9 +25,7 @@ pub(super) struct PacketBuilder {
     pub(super) max_size: usize,
     pub(super) tag_len: usize,
     pub(super) _span: tracing::span::EnteredSpan,
-    #[cfg(feature = "moq-trace")]
     trace: moq_trace::PacketTrace,
-    #[cfg(feature = "moq-trace")]
     encode_trace: moq_trace::PacketPhaseTrace,
 }
 
@@ -90,7 +88,6 @@ impl PacketBuilder {
 
         let span = trace_span!("send", space = ?space_id, pn = exact_number).entered();
 
-        #[cfg(feature = "moq-trace")]
         let trace = conn.moq_trace_connection_id.map_or_else(
             moq_trace::PacketTrace::disabled,
             |connection_id| {
@@ -171,7 +168,6 @@ impl PacketBuilder {
         let max_size = buffer_capacity - tag_len;
         debug_assert!(max_size >= min_size);
 
-        #[cfg(feature = "moq-trace")]
         let encode_trace = trace.phase(moq_trace::PacketPhase::FrameEncode);
 
         Some(Self {
@@ -185,9 +181,7 @@ impl PacketBuilder {
             tag_len,
             ack_eliciting,
             _span: span,
-            #[cfg(feature = "moq-trace")]
             trace,
-            #[cfg(feature = "moq-trace")]
             encode_trace,
         })
     }
@@ -289,14 +283,11 @@ impl PacketBuilder {
         buffer.resize(buffer.len() + packet_crypto.tag_len(), 0);
         let encode_start = self.partial_encode.start;
         let len = buffer.len() - encode_start;
-        #[cfg(feature = "moq-trace")]
         let mut trace = self.trace;
-        #[cfg(feature = "moq-trace")]
         {
             self.encode_trace.finish(moq_trace::PacketOutcome::Success);
             trace.set_byte_len(len);
         }
-        #[cfg(feature = "moq-trace")]
         let encrypt_trace = trace.phase(moq_trace::PacketPhase::PacketEncrypt);
         let packet_buf = &mut buffer[encode_start..];
         self.partial_encode.finish(
@@ -305,7 +296,6 @@ impl PacketBuilder {
             Some((self.exact_number, packet_crypto)),
         );
 
-        #[cfg(feature = "moq-trace")]
         {
             encrypt_trace.finish(moq_trace::PacketOutcome::Success);
             if let Some(sent) = _sent {

@@ -38,7 +38,6 @@ use crate::{
 };
 
 // MoQ trace hook: helper functions keep local instrumentation changes isolated.
-#[cfg(feature = "moq-trace")]
 pub(super) fn moq_trace_packet_space(space: SpaceId) -> moq_trace::PacketSpace {
     match space {
         SpaceId::Initial => moq_trace::PacketSpace::Initial,
@@ -47,7 +46,6 @@ pub(super) fn moq_trace_packet_space(space: SpaceId) -> moq_trace::PacketSpace {
     }
 }
 
-#[cfg(feature = "moq-trace")]
 fn moq_trace_finish(trace: &mut moq_trace::PacketTrace, outcome: moq_trace::PacketOutcome) {
     std::mem::replace(trace, moq_trace::PacketTrace::disabled()).finish(outcome);
 }
@@ -253,9 +251,7 @@ pub struct Connection {
     stats: ConnectionStats,
     /// QUIC version used for the connection.
     version: u32,
-    #[cfg(feature = "moq-trace")]
     moq_trace: moq_trace::Handle,
-    #[cfg(feature = "moq-trace")]
     moq_trace_connection_id: Option<u64>,
 }
 
@@ -374,9 +370,7 @@ impl Connection {
             rng,
             stats: ConnectionStats::default(),
             version,
-            #[cfg(feature = "moq-trace")]
             moq_trace: moq_trace::Handle::disabled(),
-            #[cfg(feature = "moq-trace")]
             moq_trace_connection_id: None,
         };
         if path_validated {
@@ -391,14 +385,12 @@ impl Connection {
     }
 
     /// Install the trace handle and stable identifier used by Quinn instrumentation.
-    #[cfg(feature = "moq-trace")]
     pub fn set_moq_trace(&mut self, handle: moq_trace::Handle, connection_id: u64) {
         self.moq_trace = handle;
         self.moq_trace_connection_id = Some(connection_id);
     }
 
     /// Start a sampled socket operation for this connection.
-    #[cfg(feature = "moq-trace")]
     pub fn moq_trace_socket(&self, direction: moq_trace::Direction) -> moq_trace::SocketTrace {
         self.moq_trace
             .socket(direction, self.moq_trace_connection_id)
@@ -1135,10 +1127,8 @@ impl Connection {
                 ecn,
                 first_decode,
                 remaining,
-                #[cfg(feature = "moq-trace")]
-                    moq_trace: trace_timing,
+                moq_trace: trace_timing,
             }) => {
-                #[cfg(feature = "moq-trace")]
                 let handling_ns = moq_trace::now_ns();
                 // If this packet could initiate a migration and we're a client or a server that
                 // forbids migration, drop the datagram. This could be relaxed to heuristically
@@ -1154,7 +1144,6 @@ impl Connection {
                 self.stats.udp_rx.bytes += first_decode.len() as u64;
                 let data_len = first_decode.len();
 
-                #[cfg(feature = "moq-trace")]
                 let trace = self.moq_trace_connection_id.map_or_else(
                     moq_trace::PacketTrace::disabled,
                     |connection_id| {
@@ -1168,7 +1157,6 @@ impl Connection {
                         self.moq_trace.packet(context)
                     },
                 );
-                #[cfg(feature = "moq-trace")]
                 {
                     // These intervals completed before a stable connection trace ID was available.
                     // Emit them together now while preserving their original timestamps.
@@ -1190,14 +1178,7 @@ impl Connection {
                             .finish_at(moq_trace::PacketOutcome::Success, handling_ns);
                     }
                 }
-                self.handle_decode(
-                    now,
-                    remote,
-                    ecn,
-                    first_decode,
-                    #[cfg(feature = "moq-trace")]
-                    trace,
-                );
+                self.handle_decode(now, remote, ecn, first_decode, trace);
                 // The current `path` might have changed inside `handle_decode`,
                 // since the packet could have triggered a migration. Make sure
                 // the data received is accounted for the most recent path by accessing
@@ -2099,7 +2080,6 @@ impl Connection {
             remote,
             Some(packet_number),
             packet.into(),
-            #[cfg(feature = "moq-trace")]
             &moq_trace::PacketTrace::disabled(),
         )?;
         if let Some(data) = remaining {
@@ -2297,7 +2277,6 @@ impl Connection {
         self.path.total_recvd = self.path.total_recvd.saturating_add(data.len() as u64);
         let mut remaining = Some(data);
         while let Some(data) = remaining {
-            #[cfg(feature = "moq-trace")]
             let mut trace = self.moq_trace_connection_id.map_or_else(
                 moq_trace::PacketTrace::disabled,
                 |connection_id| {
@@ -2307,7 +2286,6 @@ impl Connection {
                     )
                 },
             );
-            #[cfg(feature = "moq-trace")]
             let parse_trace = trace.phase(moq_trace::PacketPhase::HeaderParse);
             match PartialDecode::new(
                 data,
@@ -2316,7 +2294,6 @@ impl Connection {
                 self.endpoint_config.grease_quic_bit,
             ) {
                 Ok((partial_decode, rest)) => {
-                    #[cfg(feature = "moq-trace")]
                     {
                         parse_trace.finish(moq_trace::PacketOutcome::Success);
                         if let Some(space) = partial_decode.space() {
@@ -2325,17 +2302,9 @@ impl Connection {
                         trace.set_byte_len(partial_decode.len());
                     }
                     remaining = rest;
-                    self.handle_decode(
-                        now,
-                        remote,
-                        ecn,
-                        partial_decode,
-                        #[cfg(feature = "moq-trace")]
-                        trace,
-                    );
+                    self.handle_decode(now, remote, ecn, partial_decode, trace);
                 }
                 Err(e) => {
-                    #[cfg(feature = "moq-trace")]
                     {
                         parse_trace.finish(moq_trace::PacketOutcome::Malformed);
                         moq_trace_finish(&mut trace, moq_trace::PacketOutcome::Malformed);
@@ -2353,9 +2322,8 @@ impl Connection {
         remote: SocketAddr,
         ecn: Option<EcnCodepoint>,
         partial_decode: PartialDecode,
-        #[cfg(feature = "moq-trace")] mut trace: moq_trace::PacketTrace,
+        mut trace: moq_trace::PacketTrace,
     ) {
-        #[cfg(feature = "moq-trace")]
         let unprotect_trace = trace.phase(moq_trace::PacketPhase::HeaderUnprotect);
         let decoded = packet_crypto::unprotect_header(
             partial_decode,
@@ -2363,7 +2331,6 @@ impl Connection {
             self.zero_rtt_crypto.as_ref(),
             self.peer_params.stateless_reset_token,
         );
-        #[cfg(feature = "moq-trace")]
         unprotect_trace.finish(match &decoded {
             Some(_) => moq_trace::PacketOutcome::Success,
             None => moq_trace::PacketOutcome::Dropped,
@@ -2375,11 +2342,9 @@ impl Connection {
                 ecn,
                 decoded.packet,
                 decoded.stateless_reset,
-                #[cfg(feature = "moq-trace")]
                 trace,
             );
         } else {
-            #[cfg(feature = "moq-trace")]
             moq_trace_finish(&mut trace, moq_trace::PacketOutcome::Dropped);
         }
     }
@@ -2391,7 +2356,7 @@ impl Connection {
         ecn: Option<EcnCodepoint>,
         packet: Option<Packet>,
         stateless_reset: bool,
-        #[cfg(feature = "moq-trace")] mut trace: moq_trace::PacketTrace,
+        mut trace: moq_trace::PacketTrace,
     ) {
         self.stats.udp_rx.ios += 1;
         if let Some(ref packet) = packet {
@@ -2406,7 +2371,6 @@ impl Connection {
 
         if self.is_handshaking() && remote != self.path.remote {
             debug!("discarding packet with unexpected remote during handshake");
-            #[cfg(feature = "moq-trace")]
             moq_trace_finish(&mut trace, moq_trace::PacketOutcome::Dropped);
             return;
         }
@@ -2414,7 +2378,6 @@ impl Connection {
         let was_closed = self.state.is_closed();
         let was_drained = self.state.is_drained();
 
-        #[cfg(feature = "moq-trace")]
         let decrypt_trace = trace.phase(moq_trace::PacketPhase::PayloadDecrypt);
         let decrypted = match packet {
             None => Err(None),
@@ -2422,7 +2385,6 @@ impl Connection {
                 .decrypt_packet(now, &mut packet)
                 .map(move |number| (packet, number)),
         };
-        #[cfg(feature = "moq-trace")]
         {
             decrypt_trace.finish(match &decrypted {
                 Ok(_) => moq_trace::PacketOutcome::Success,
@@ -2455,7 +2417,6 @@ impl Connection {
                 if self.authentication_failures > integrity_limit {
                     Err(TransportError::AEAD_LIMIT_REACHED("integrity limit violated").into())
                 } else {
-                    #[cfg(feature = "moq-trace")]
                     moq_trace_finish(&mut trace, moq_trace::PacketOutcome::AuthenticationFailed);
                     return;
                 }
@@ -2470,13 +2431,11 @@ impl Connection {
                 let is_duplicate = |n| self.spaces[packet.header.space()].dedup.insert(n);
                 if number.is_some_and(is_duplicate) {
                     debug!("discarding possible duplicate packet");
-                    #[cfg(feature = "moq-trace")]
                     moq_trace_finish(&mut trace, moq_trace::PacketOutcome::Dropped);
                     return;
                 } else if self.state.is_handshake() && packet.header.is_short() {
                     // TODO: SHOULD buffer these to improve reordering tolerance.
                     trace!("dropping short packet during handshake");
-                    #[cfg(feature = "moq-trace")]
                     moq_trace_finish(&mut trace, moq_trace::PacketOutcome::Dropped);
                     return;
                 } else {
@@ -2487,7 +2446,6 @@ impl Connection {
                                 // packets can be spoofed, so we discard rather than killing the
                                 // connection.
                                 warn!("discarding Initial with invalid retry token");
-                                #[cfg(feature = "moq-trace")]
                                 moq_trace_finish(&mut trace, moq_trace::PacketOutcome::Dropped);
                                 return;
                             }
@@ -2509,19 +2467,11 @@ impl Connection {
                         );
                     }
 
-                    self.process_decrypted_packet(
-                        now,
-                        remote,
-                        number,
-                        packet,
-                        #[cfg(feature = "moq-trace")]
-                        &trace,
-                    )
+                    self.process_decrypted_packet(now, remote, number, packet, &trace)
                 }
             }
         };
 
-        #[cfg(feature = "moq-trace")]
         moq_trace_finish(
             &mut trace,
             if result.is_ok() {
@@ -2586,19 +2536,14 @@ impl Connection {
         remote: SocketAddr,
         number: Option<u64>,
         packet: Packet,
-        #[cfg(feature = "moq-trace")] trace: &moq_trace::PacketTrace,
+        trace: &moq_trace::PacketTrace,
     ) -> Result<(), ConnectionError> {
         let state = match self.state {
             State::Established => {
                 match packet.header.space() {
-                    SpaceId::Data => self.process_payload(
-                        now,
-                        remote,
-                        number.unwrap(),
-                        packet,
-                        #[cfg(feature = "moq-trace")]
-                        trace,
-                    )?,
+                    SpaceId::Data => {
+                        self.process_payload(now, remote, number.unwrap(), packet, trace)?
+                    }
                     _ if packet.header.has_frames() => self.process_early_payload(now, packet)?,
                     _ => {
                         trace!("discarding unexpected pre-handshake packet");
@@ -2824,14 +2769,7 @@ impl Connection {
                 ty: LongType::ZeroRtt,
                 ..
             } => {
-                self.process_payload(
-                    now,
-                    remote,
-                    number.unwrap(),
-                    packet,
-                    #[cfg(feature = "moq-trace")]
-                    trace,
-                )?;
+                self.process_payload(now, remote, number.unwrap(), packet, trace)?;
                 Ok(())
             }
             Header::VersionNegotiate { .. } => {
@@ -2918,7 +2856,7 @@ impl Connection {
         remote: SocketAddr,
         number: u64,
         packet: Packet,
-        #[cfg(feature = "moq-trace")] trace: &moq_trace::PacketTrace,
+        trace: &moq_trace::PacketTrace,
     ) -> Result<(), TransportError> {
         let payload = packet.payload.freeze();
         let mut is_probing_packet = true;
@@ -2978,22 +2916,18 @@ impl Connection {
                     self.read_crypto(SpaceId::Data, &frame, payload_len)?;
                 }
                 Frame::Stream(frame) => {
-                    #[cfg(feature = "moq-trace")]
                     let frame_trace = trace.phase(moq_trace::PacketPhase::FrameProcess);
-                    #[cfg(feature = "moq-trace")]
                     let stream_frame = moq_trace::StreamFrame::new(
                         frame.id.0,
                         frame.offset,
                         frame.offset + frame.data.len() as u64,
                     );
                     let received = self.streams.received(frame, payload_len);
-                    #[cfg(feature = "moq-trace")]
                     frame_trace.finish(if received.is_ok() {
                         moq_trace::PacketOutcome::Success
                     } else {
                         moq_trace::PacketOutcome::Malformed
                     });
-                    #[cfg(feature = "moq-trace")]
                     trace.stream_frame(
                         stream_frame,
                         if received.is_ok() {
