@@ -154,7 +154,6 @@ impl Endpoint {
     ) -> Option<DatagramEvent> {
         // Partially decode packet or short-circuit if unable
         let datagram_len = data.len();
-        #[cfg(feature = "moq-trace")]
         let packet_start_ns = moq_trace::now_ns();
         let event = match PartialDecode::new(
             data,
@@ -163,7 +162,6 @@ impl Endpoint {
             self.config.grease_quic_bit,
         ) {
             Ok((first_decode, remaining)) => {
-                #[cfg(feature = "moq-trace")]
                 let moq_trace = crate::shared::DatagramTrace {
                     start_ns: packet_start_ns,
                     header_parse_end_ns: moq_trace::now_ns(),
@@ -175,7 +173,6 @@ impl Endpoint {
                     ecn,
                     first_decode,
                     remaining,
-                    #[cfg(feature = "moq-trace")]
                     moq_trace,
                 }
             }

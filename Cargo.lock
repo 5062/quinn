@@ -1611,9 +1611,9 @@ checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 
 [[package]]
 name = "libc"
-version = "0.2.186"
+version = "0.2.189"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
+checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
 
 [[package]]
 name = "libfuzzer-sys"
@@ -1753,12 +1753,10 @@ dependencies = [
 [[package]]
 name = "moq-trace"
 version = "0.1.0"
+source = "git+https://github.com/5062/moq-trace?branch=main#be58d4ce8882df96bc670a53aa9bc6ce00062469"
 dependencies = [
- "cc",
- "pkg-config",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
+ "quic-trace",
+ "trace-core",
 ]
 
 [[package]]
@@ -1967,12 +1965,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "pkg-config"
-version = "0.3.34"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
-
-[[package]]
 name = "polling"
 version = "3.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2077,6 +2069,14 @@ dependencies = [
  "serde_json",
  "serde_with",
  "smallvec",
+]
+
+[[package]]
+name = "quic-trace"
+version = "0.1.0"
+source = "git+https://github.com/5062/moq-trace?branch=main#be58d4ce8882df96bc670a53aa9bc6ce00062469"
+dependencies = [
+ "trace-core",
 ]
 
 [[package]]
@@ -2948,6 +2948,14 @@ name = "tower-service"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8df9b6e13f2d32c91b9bd719c00d1958837bc7dec474d94952798cc8e69eeec3"
+
+[[package]]
+name = "trace-core"
+version = "0.1.0"
+source = "git+https://github.com/5062/moq-trace?branch=main#be58d4ce8882df96bc670a53aa9bc6ce00062469"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "tracing"

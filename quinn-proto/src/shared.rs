@@ -24,11 +24,9 @@ pub(crate) struct DatagramConnectionEvent {
     pub(crate) ecn: Option<EcnCodepoint>,
     pub(crate) first_decode: PartialDecode,
     pub(crate) remaining: Option<BytesMut>,
-    #[cfg(feature = "moq-trace")]
     pub(crate) moq_trace: DatagramTrace,
 }
 
-#[cfg(feature = "moq-trace")]
 #[derive(Debug)]
 pub(crate) struct DatagramTrace {
     pub(crate) start_ns: u64,
@@ -38,7 +36,6 @@ pub(crate) struct DatagramTrace {
 
 impl ConnectionEvent {
     /// Record when this datagram is handed to the connection task.
-    #[cfg(feature = "moq-trace")]
     pub fn record_moq_trace_enqueued(&mut self, timestamp_ns: u64) {
         let ConnectionEventInner::Datagram(event) = &mut self.0 else {
             return;

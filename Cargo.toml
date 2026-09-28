@@ -63,3 +63,8 @@ debug = true
 
 [profile.release]
 debug = true
+
+# The trace hooks are always compiled, and the toolkit is not on crates.io.
+# Consumers apply their own patch; this one lets the fork build and test alone.
+[patch.crates-io]
+moq-trace = { git = "https://github.com/5062/moq-trace", branch = "main" }

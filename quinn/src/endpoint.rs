@@ -743,11 +743,9 @@ struct RecvState {
     connections: ConnectionSet,
     recv_buf: Box<[u8]>,
     recv_limiter: WorkLimiter,
-    #[cfg(feature = "moq-trace")]
     trace: moq_trace::Handle,
 }
 
-#[cfg(feature = "moq-trace")]
 fn recv_socket_stats(metas: &[RecvMeta]) -> moq_trace::SocketStats {
     moq_trace::SocketStats::new(
         metas.len(),
@@ -780,7 +778,6 @@ impl RecvState {
             incoming: VecDeque::new(),
             recv_buf: recv_buf.into(),
             recv_limiter: WorkLimiter::new(RECV_TIME_BOUND),
-            #[cfg(feature = "moq-trace")]
             trace: moq_trace::global(),
         }
     }
@@ -807,11 +804,9 @@ impl RecvState {
             std::array::from_fn(|_| bufs.next().expect("BATCH_SIZE elements"))
         };
         loop {
-            #[cfg(feature = "moq-trace")]
             let trace = self.trace.socket(moq_trace::Direction::Rx, None);
             match socket.poll_recv(cx, &mut iovs, &mut metas) {
                 Poll::Ready(Ok(msgs)) => {
-                    #[cfg(feature = "moq-trace")]
                     trace.finish(
                         moq_trace::SocketOutcome::Success,
                         recv_socket_stats(&metas[..msgs]),
@@ -843,7 +838,6 @@ impl RecvState {
                                     // Ignoring errors from dropped connections that haven't yet been cleaned up
                                     received_connection_packet = true;
                                     let sender = self.connections.senders.get_mut(&handle).unwrap();
-                                    #[cfg(feature = "moq-trace")]
                                     let event = {
                                         let mut event = event;
                                         event.record_moq_trace_enqueued(moq_trace::now_ns());
@@ -860,7 +854,6 @@ impl RecvState {
                     }
                 }
                 Poll::Pending => {
-                    #[cfg(feature = "moq-trace")]
                     trace.finish(
                         moq_trace::SocketOutcome::Pending,
                         moq_trace::SocketStats::default(),
@@ -873,7 +866,6 @@ impl RecvState {
                 // Ignore ECONNRESET as it's undefined in QUIC and may be injected by an
                 // attacker
                 Poll::Ready(Err(ref e)) if e.kind() == io::ErrorKind::ConnectionReset => {
-                    #[cfg(feature = "moq-trace")]
                     trace.finish(
                         moq_trace::SocketOutcome::ConnectionReset,
                         moq_trace::SocketStats::default(),
@@ -881,7 +873,6 @@ impl RecvState {
                     continue;
                 }
                 Poll::Ready(Err(e)) => {
-                    #[cfg(feature = "moq-trace")]
                     trace.finish(
                         moq_trace::SocketOutcome::Error,
                         moq_trace::SocketStats::default(),
@@ -918,7 +909,7 @@ struct PollProgress {
     keep_going: bool,
 }
 
-#[cfg(all(test, feature = "moq-trace"))]
+#[cfg(test)]
 mod moq_trace_tests {
     use super::*;
 
