@@ -2153,6 +2153,7 @@ dependencies = [
  "criterion",
  "libc",
  "log",
+ "moq-trace",
  "once_cell",
  "socket2 0.6.3",
  "tokio",

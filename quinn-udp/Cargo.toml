@@ -22,6 +22,7 @@ fast-apple-datapath = []
 
 [dependencies]
 libc = "0.2.158"
+moq-trace = { version = "0.1", default-features = false }
 log = { workspace = true, optional = true }
 tracing = { workspace = true, optional = true }
 

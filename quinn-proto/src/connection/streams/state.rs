@@ -249,12 +249,28 @@ impl StreamsState {
 
     /// Process incoming stream frame
     ///
-    /// If successful, returns whether a `MAX_DATA` frame needs to be transmitted
+    /// If successful, returns whether a `MAX_DATA` frame needs to be transmitted. Only tests use
+    /// this form; the connection uses [`Self::received_buffered`] for the delivery outcome.
+    #[cfg(test)]
     pub(crate) fn received(
         &mut self,
         frame: frame::Stream,
         payload_len: usize,
     ) -> Result<ShouldTransmit, TransportError> {
+        self.received_buffered(frame, payload_len)
+            .map(|(transmit, _)| transmit)
+    }
+
+    /// Process incoming stream frame, and report whether its data entered a receive buffer
+    ///
+    /// If successful, returns whether a `MAX_DATA` frame needs to be transmitted.
+    /// A frame for a closed, finished, or stopped stream is accepted for flow control but its
+    /// data is discarded, so `moq-trace` records it as dropped rather than as delivered.
+    pub(crate) fn received_buffered(
+        &mut self,
+        frame: frame::Stream,
+        payload_len: usize,
+    ) -> Result<(ShouldTransmit, bool), TransportError> {
         let id = frame.id;
         self.validate_receive_id(id).inspect_err(|_e| {
             debug!("received illegal STREAM frame");
@@ -268,13 +284,13 @@ impl StreamsState {
             Some(rs) => rs,
             None => {
                 trace!("dropping frame for closed stream");
-                return Ok(ShouldTransmit(false));
+                return Ok((ShouldTransmit(false), false));
             }
         };
 
         if !rs.is_receiving() {
             trace!("dropping frame for finished stream");
-            return Ok(ShouldTransmit(false));
+            return Ok((ShouldTransmit(false), false));
         }
 
         let (new_bytes, closed) =
@@ -283,7 +299,7 @@ impl StreamsState {
 
         if !rs.stopped {
             self.on_stream_frame(true, id);
-            return Ok(ShouldTransmit(false));
+            return Ok((ShouldTransmit(false), true));
         }
 
         // Stopped streams become closed instantly on FIN, so check whether we need to clean up
@@ -293,7 +309,7 @@ impl StreamsState {
         }
 
         // We don't buffer data on stopped streams, so issue flow control credit immediately
-        Ok(self.add_read_credits(new_bytes))
+        Ok((self.add_read_credits(new_bytes), false))
     }
 
     /// Process incoming RESET_STREAM frame

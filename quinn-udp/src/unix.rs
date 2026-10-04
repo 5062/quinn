@@ -205,7 +205,7 @@ impl UdpSocketState {
     /// If you would like to handle these errors yourself, use [`UdpSocketState::try_send`]
     /// instead.
     pub fn send(&self, socket: UdpSockRef<'_>, transmit: &Transmit<'_>) -> io::Result<()> {
-        match send(self, socket.0, transmit) {
+        match send(self, socket.0, transmit, None).0 {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => Err(e),
             // - EMSGSIZE is expected for MTU probes. Future work might be able to avoid
@@ -221,9 +221,30 @@ impl UdpSocketState {
 
     /// Sends a [`Transmit`] on the given socket without any additional error handling.
     pub fn try_send(&self, socket: UdpSockRef<'_>, transmit: &Transmit<'_>) -> io::Result<()> {
-        send(self, socket.0, transmit)
+        send(self, socket.0, transmit, None).0
     }
 
+    /// Sends a [`Transmit`] like [`UdpSocketState::try_send`], and also returns when the
+    /// final send system call returned, on the `moq-trace` clock.
+    ///
+    /// The result is the system call's own, before any error policy, so a caller can tell
+    /// a datagram the kernel accepted from one it discarded. Each system call is recorded
+    /// as a `quic_trace:udp_socket` operation for `connection_id`, ending at the returned
+    /// instant, so the packets the transmit carried can end at exactly that instant.
+    pub fn try_send_timed(
+        &self,
+        socket: UdpSockRef<'_>,
+        transmit: &Transmit<'_>,
+        connection_id: Option<u64>,
+    ) -> (io::Result<()>, u64) {
+        send(self, socket.0, transmit, connection_id)
+    }
+
+    /// Receives datagrams into `bufs`, one [`RecvMeta`] per buffer filled.
+    ///
+    /// Each [`RecvMeta::read_ns`] holds the instant the receive system call that filled
+    /// it returned, and each system call is recorded as a `quic_trace:udp_socket`
+    /// operation ending at that instant.
     pub fn recv(
         &self,
         socket: UdpSockRef<'_>,
@@ -302,12 +323,16 @@ fn send(
     state: &UdpSocketState,
     io: SockRef<'_>,
     transmit: &Transmit<'_>,
-) -> io::Result<()> {
+    connection_id: Option<u64>,
+) -> (io::Result<()>, u64) {
     #[allow(unused_mut)] // only mutable on FreeBSD
     let mut encode_src_ip = true;
     #[cfg(target_os = "freebsd")]
     {
-        let addr = io.local_addr()?;
+        let addr = match io.local_addr() {
+            Ok(addr) => addr,
+            Err(e) => return (Err(e), moq_trace::now_ns()),
+        };
         let is_ipv4 = addr.family() == libc::AF_INET as libc::sa_family_t;
         if is_ipv4 {
             if let Some(socket) = addr.as_socket_ipv4() {
@@ -330,17 +355,21 @@ fn send(
     );
 
     loop {
+        let syscall = Syscall::start(moq_trace::Direction::Tx, connection_id);
         let n = unsafe { libc::sendmsg(io.as_raw_fd(), &msg_hdr, 0) };
+        let sent_ns = moq_trace::now_ns();
 
         if n >= 0 {
-            return Ok(());
+            syscall.succeeded(transmit_stats(transmit), sent_ns);
+            return (Ok(()), sent_ns);
         }
 
         let e = io::Error::last_os_error();
+        syscall.failed(&e, sent_ns);
         match e.kind() {
             // Retry the transmission
             io::ErrorKind::Interrupted => continue,
-            io::ErrorKind::WouldBlock => return Err(e),
+            io::ErrorKind::WouldBlock => return (Err(e), sent_ns),
             _ => {
                 // Some network adapters and drivers do not support GSO. Unfortunately, Linux
                 // offers no easy way for us to detect this short of an EIO or sometimes EINVAL
@@ -375,14 +404,19 @@ fn send(
                     continue;
                 }
 
-                return Err(e);
+                return (Err(e), sent_ns);
             }
         }
     }
 }
 
 #[cfg(apple_fast)]
-fn send(state: &UdpSocketState, io: SockRef<'_>, transmit: &Transmit<'_>) -> io::Result<()> {
+fn send(
+    state: &UdpSocketState,
+    io: SockRef<'_>,
+    transmit: &Transmit<'_>,
+    connection_id: Option<u64>,
+) -> (io::Result<()>, u64) {
     let mut hdrs = unsafe { mem::zeroed::<[msghdr_x; BATCH_SIZE]>() };
     let mut iovs = unsafe { mem::zeroed::<[libc::iovec; BATCH_SIZE]>() };
     let mut ctrls = [cmsg::Aligned([0u8; CMSG_LEN]); BATCH_SIZE];
@@ -415,23 +449,32 @@ fn send(state: &UdpSocketState, io: SockRef<'_>, transmit: &Transmit<'_>) -> io:
         cnt += 1;
     }
     loop {
+        let syscall = Syscall::start(moq_trace::Direction::Tx, connection_id);
         let n = unsafe { sendmsg_x(io.as_raw_fd(), hdrs.as_ptr(), cnt as u32, 0) };
+        let sent_ns = moq_trace::now_ns();
 
         if n >= 0 {
-            return Ok(());
+            syscall.succeeded(transmit_stats(transmit), sent_ns);
+            return (Ok(()), sent_ns);
         }
 
         let e = io::Error::last_os_error();
+        syscall.failed(&e, sent_ns);
         match e.kind() {
             // Retry the transmission
             io::ErrorKind::Interrupted => continue,
-            _ => return Err(e),
+            _ => return (Err(e), sent_ns),
         }
     }
 }
 
 #[cfg(any(target_os = "openbsd", target_os = "netbsd", apple_slow))]
-fn send(state: &UdpSocketState, io: SockRef<'_>, transmit: &Transmit<'_>) -> io::Result<()> {
+fn send(
+    state: &UdpSocketState,
+    io: SockRef<'_>,
+    transmit: &Transmit<'_>,
+    connection_id: Option<u64>,
+) -> (io::Result<()>, u64) {
     let mut hdr: libc::msghdr = unsafe { mem::zeroed() };
     let mut iov: libc::iovec = unsafe { mem::zeroed() };
     let mut ctrl = cmsg::Aligned([0u8; CMSG_LEN]);
@@ -446,17 +489,21 @@ fn send(state: &UdpSocketState, io: SockRef<'_>, transmit: &Transmit<'_>) -> io:
         state.sendmsg_einval(),
     );
     loop {
+        let syscall = Syscall::start(moq_trace::Direction::Tx, connection_id);
         let n = unsafe { libc::sendmsg(io.as_raw_fd(), &hdr, 0) };
+        let sent_ns = moq_trace::now_ns();
 
         if n >= 0 {
-            return Ok(());
+            syscall.succeeded(transmit_stats(transmit), sent_ns);
+            return (Ok(()), sent_ns);
         }
 
         let e = io::Error::last_os_error();
+        syscall.failed(&e, sent_ns);
         match e.kind() {
             // Retry the transmission
             io::ErrorKind::Interrupted => continue,
-            _ => return Err(e),
+            _ => return (Err(e), sent_ns),
         }
     }
 }
@@ -475,7 +522,8 @@ fn recv(io: SockRef<'_>, bufs: &mut [IoSliceMut<'_>], meta: &mut [RecvMeta]) -> 
             &mut hdrs[i].msg_hdr,
         );
     }
-    let msg_count = loop {
+    let (msg_count, syscall, read_ns) = loop {
+        let syscall = Syscall::start(moq_trace::Direction::Rx, None);
         let n = unsafe {
             libc::recvmmsg(
                 io.as_raw_fd(),
@@ -485,12 +533,14 @@ fn recv(io: SockRef<'_>, bufs: &mut [IoSliceMut<'_>], meta: &mut [RecvMeta]) -> 
                 ptr::null_mut::<libc::timespec>(),
             )
         };
+        let read_ns = moq_trace::now_ns();
 
         if n >= 0 {
-            break n;
+            break (n, syscall, read_ns);
         }
 
         let e = io::Error::last_os_error();
+        syscall.failed(&e, read_ns);
         match e.kind() {
             // Retry receiving
             io::ErrorKind::Interrupted => continue,
@@ -499,7 +549,9 @@ fn recv(io: SockRef<'_>, bufs: &mut [IoSliceMut<'_>], meta: &mut [RecvMeta]) -> 
     };
     for i in 0..(msg_count as usize) {
         meta[i] = decode_recv(&names[i], &hdrs[i].msg_hdr, hdrs[i].msg_len as usize);
+        meta[i].read_ns = read_ns;
     }
+    syscall.succeeded(recv_stats(&meta[..msg_count as usize]), read_ns);
     Ok(msg_count as usize)
 }
 
@@ -518,14 +570,17 @@ fn recv(io: SockRef<'_>, bufs: &mut [IoSliceMut<'_>], meta: &mut [RecvMeta]) -> 
     for i in 0..max_msg_count {
         prepare_recv(&mut bufs[i], &mut names[i], &mut ctrls[i], &mut hdrs[i]);
     }
-    let msg_count = loop {
+    let (msg_count, syscall, read_ns) = loop {
+        let syscall = Syscall::start(moq_trace::Direction::Rx, None);
         let n = unsafe { recvmsg_x(io.as_raw_fd(), hdrs.as_mut_ptr(), max_msg_count as _, 0) };
+        let read_ns = moq_trace::now_ns();
 
         if n >= 0 {
-            break n;
+            break (n, syscall, read_ns);
         }
 
         let e = io::Error::last_os_error();
+        syscall.failed(&e, read_ns);
         match e.kind() {
             // Retry receiving
             io::ErrorKind::Interrupted => continue,
@@ -534,7 +589,9 @@ fn recv(io: SockRef<'_>, bufs: &mut [IoSliceMut<'_>], meta: &mut [RecvMeta]) -> 
     };
     for i in 0..(msg_count as usize) {
         meta[i] = decode_recv(&names[i], &hdrs[i], hdrs[i].msg_datalen as usize);
+        meta[i].read_ns = read_ns;
     }
+    syscall.succeeded(recv_stats(&meta[..msg_count as usize]), read_ns);
     Ok(msg_count as usize)
 }
 
@@ -544,18 +601,22 @@ fn recv(io: SockRef<'_>, bufs: &mut [IoSliceMut<'_>], meta: &mut [RecvMeta]) -> 
     let mut ctrl = cmsg::Aligned(MaybeUninit::<[u8; CMSG_LEN]>::uninit());
     let mut hdr = unsafe { mem::zeroed::<libc::msghdr>() };
     prepare_recv(&mut bufs[0], &mut name, &mut ctrl, &mut hdr);
-    let n = loop {
+    let (n, syscall, read_ns) = loop {
+        let syscall = Syscall::start(moq_trace::Direction::Rx, None);
         let n = unsafe { libc::recvmsg(io.as_raw_fd(), &mut hdr, 0) };
+        let read_ns = moq_trace::now_ns();
 
         if hdr.msg_flags & libc::MSG_TRUNC != 0 {
+            syscall.failed(&io::Error::from(io::ErrorKind::InvalidData), read_ns);
             continue;
         }
 
         if n >= 0 {
-            break n;
+            break (n, syscall, read_ns);
         }
 
         let e = io::Error::last_os_error();
+        syscall.failed(&e, read_ns);
         match e.kind() {
             // Retry receiving
             io::ErrorKind::Interrupted => continue,
@@ -563,10 +624,59 @@ fn recv(io: SockRef<'_>, bufs: &mut [IoSliceMut<'_>], meta: &mut [RecvMeta]) -> 
         }
     };
     meta[0] = decode_recv(&name, &hdr, n as usize);
+    meta[0].read_ns = read_ns;
+    syscall.succeeded(recv_stats(&meta[..1]), read_ns);
     Ok(1)
 }
 
 const CMSG_LEN: usize = 88;
+
+/// One receive or send system call, recorded as a `quic_trace:udp_socket` operation.
+///
+/// The clock is read the instant the call returns, and that instant ends the operation.
+/// The same instant reaches the caller, which ends the packets the call carried with it,
+/// so the socket operation and its packets agree exactly.
+struct Syscall(moq_trace::SocketTrace);
+
+impl Syscall {
+    fn start(direction: moq_trace::Direction, connection_id: Option<u64>) -> Self {
+        Self(moq_trace::global().socket(direction, connection_id))
+    }
+
+    fn succeeded(self, stats: moq_trace::SocketStats, at_ns: u64) {
+        self.0
+            .finish_at(moq_trace::SocketOutcome::Success, stats, at_ns);
+    }
+
+    /// Record the call's own error, before any error policy of the caller.
+    fn failed(self, error: &io::Error, at_ns: u64) {
+        let outcome = match error.kind() {
+            io::ErrorKind::WouldBlock => moq_trace::SocketOutcome::WouldBlock,
+            io::ErrorKind::ConnectionReset => moq_trace::SocketOutcome::ConnectionReset,
+            _ => moq_trace::SocketOutcome::Error,
+        };
+        self.0
+            .finish_at(outcome, moq_trace::SocketStats::default(), at_ns);
+    }
+}
+
+/// The buffers, datagrams, and bytes one send system call carried.
+fn transmit_stats(transmit: &Transmit<'_>) -> moq_trace::SocketStats {
+    let bytes = transmit.contents.len();
+    let datagrams = transmit.segment_size.map_or(1, |size| bytes.div_ceil(size));
+    moq_trace::SocketStats::new(1, datagrams, bytes)
+}
+
+/// The buffers, datagrams, and bytes one receive system call filled.
+fn recv_stats(meta: &[RecvMeta]) -> moq_trace::SocketStats {
+    moq_trace::SocketStats::new(
+        meta.len(),
+        meta.iter()
+            .map(|meta| meta.len.div_ceil(meta.stride.max(1)))
+            .sum(),
+        meta.iter().map(|meta| meta.len).sum(),
+    )
+}
 
 fn prepare_msg(
     transmit: &Transmit<'_>,
@@ -784,6 +894,8 @@ fn decode_recv(
         addr,
         ecn: EcnCodepoint::from_bits(ecn_bits),
         dst_ip,
+        // The caller stamps the receive system call's completion.
+        read_ns: 0,
     }
 }
 

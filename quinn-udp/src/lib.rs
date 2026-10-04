@@ -115,6 +115,11 @@ pub struct RecvMeta {
     /// Populated on platforms: Windows, Linux, Android (API level > 25),
     /// FreeBSD, OpenBSD, NetBSD, macOS, and iOS.
     pub dst_ip: Option<IpAddr>,
+    /// When the receive system call that filled this buffer returned, on the `moq-trace`
+    /// clock
+    ///
+    /// Every packet in the buffer starts its `moq-trace` lifecycle at this instant.
+    pub read_ns: u64,
 }
 
 impl Default for RecvMeta {
@@ -126,6 +131,7 @@ impl Default for RecvMeta {
             stride: 0,
             ecn: None,
             dst_ip: None,
+            read_ns: 0,
         }
     }
 }

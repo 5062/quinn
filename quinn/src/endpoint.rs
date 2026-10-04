@@ -743,18 +743,6 @@ struct RecvState {
     connections: ConnectionSet,
     recv_buf: Box<[u8]>,
     recv_limiter: WorkLimiter,
-    trace: moq_trace::Handle,
-}
-
-fn recv_socket_stats(metas: &[RecvMeta]) -> moq_trace::SocketStats {
-    moq_trace::SocketStats::new(
-        metas.len(),
-        metas
-            .iter()
-            .map(|meta| meta.len.div_ceil(meta.stride.max(1)))
-            .sum(),
-        metas.iter().map(|meta| meta.len).sum(),
-    )
 }
 
 impl RecvState {
@@ -778,7 +766,6 @@ impl RecvState {
             incoming: VecDeque::new(),
             recv_buf: recv_buf.into(),
             recv_limiter: WorkLimiter::new(RECV_TIME_BOUND),
-            trace: moq_trace::global(),
         }
     }
 
@@ -804,26 +791,24 @@ impl RecvState {
             std::array::from_fn(|_| bufs.next().expect("BATCH_SIZE elements"))
         };
         loop {
-            let trace = self.trace.socket(moq_trace::Direction::Rx, None);
+            // `quinn-udp` records each receive system call as a `quic_trace:udp_socket`
+            // operation and stamps every buffer with the instant that call returned.
             match socket.poll_recv(cx, &mut iovs, &mut metas) {
                 Poll::Ready(Ok(msgs)) => {
-                    trace.finish(
-                        moq_trace::SocketOutcome::Success,
-                        recv_socket_stats(&metas[..msgs]),
-                    );
                     self.recv_limiter.record_work(msgs);
                     for (meta, buf) in metas.iter().zip(iovs.iter()).take(msgs) {
                         let mut data: BytesMut = buf[0..meta.len].into();
                         while !data.is_empty() {
                             let buf = data.split_to(meta.stride.min(data.len()));
                             let mut response_buffer = Vec::new();
-                            match endpoint.handle(
+                            match endpoint.handle_at(
                                 now,
                                 meta.addr,
                                 meta.dst_ip,
                                 meta.ecn.map(proto_ecn),
                                 buf,
                                 &mut response_buffer,
+                                meta.read_ns,
                             ) {
                                 Some(DatagramEvent::NewConnection(incoming)) => {
                                     if self.connections.close.is_none() {
@@ -854,10 +839,6 @@ impl RecvState {
                     }
                 }
                 Poll::Pending => {
-                    trace.finish(
-                        moq_trace::SocketOutcome::Pending,
-                        moq_trace::SocketStats::default(),
-                    );
                     return Ok(PollProgress {
                         received_connection_packet,
                         keep_going: false,
@@ -866,17 +847,9 @@ impl RecvState {
                 // Ignore ECONNRESET as it's undefined in QUIC and may be injected by an
                 // attacker
                 Poll::Ready(Err(ref e)) if e.kind() == io::ErrorKind::ConnectionReset => {
-                    trace.finish(
-                        moq_trace::SocketOutcome::ConnectionReset,
-                        moq_trace::SocketStats::default(),
-                    );
                     continue;
                 }
                 Poll::Ready(Err(e)) => {
-                    trace.finish(
-                        moq_trace::SocketOutcome::Error,
-                        moq_trace::SocketStats::default(),
-                    );
                     return Err(e);
                 }
             }
@@ -907,30 +880,4 @@ struct PollProgress {
     received_connection_packet: bool,
     /// Whether datagram handling was interrupted early by the work limiter for fairness
     keep_going: bool,
-}
-
-#[cfg(test)]
-mod moq_trace_tests {
-    use super::*;
-
-    #[test]
-    fn recv_stats_count_gro_datagrams() {
-        let metas = [
-            RecvMeta {
-                len: 3000,
-                stride: 1200,
-                ..RecvMeta::default()
-            },
-            RecvMeta {
-                len: 800,
-                stride: 1200,
-                ..RecvMeta::default()
-            },
-        ];
-
-        assert_eq!(
-            recv_socket_stats(&metas),
-            moq_trace::SocketStats::new(2, 4, 3800),
-        );
-    }
 }

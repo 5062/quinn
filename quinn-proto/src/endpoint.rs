@@ -152,6 +152,25 @@ impl Endpoint {
         data: BytesMut,
         buf: &mut Vec<u8>,
     ) -> Option<DatagramEvent> {
+        self.handle_at(now, remote, local_ip, ecn, data, buf, moq_trace::now_ns())
+    }
+
+    /// Process an incoming UDP datagram returned by a receive system call that completed at
+    /// `read_ns` on the `moq-trace` clock
+    ///
+    /// Every packet in the datagram starts its `moq-trace` lifecycle at `read_ns`, and the
+    /// time until its processing begins is its `read_queue` phase.
+    #[allow(clippy::too_many_arguments)]
+    pub fn handle_at(
+        &mut self,
+        now: Instant,
+        remote: SocketAddr,
+        local_ip: Option<IpAddr>,
+        ecn: Option<EcnCodepoint>,
+        data: BytesMut,
+        buf: &mut Vec<u8>,
+        read_ns: u64,
+    ) -> Option<DatagramEvent> {
         // Partially decode packet or short-circuit if unable
         let datagram_len = data.len();
         let packet_start_ns = moq_trace::now_ns();
@@ -163,6 +182,7 @@ impl Endpoint {
         ) {
             Ok((first_decode, remaining)) => {
                 let moq_trace = crate::shared::DatagramTrace {
+                    read_ns,
                     start_ns: packet_start_ns,
                     header_parse_end_ns: moq_trace::now_ns(),
                     enqueued_ns: None,

@@ -68,6 +68,23 @@ impl AsyncUdpSocket for UdpSocket {
         })
     }
 
+    fn try_send_timed(
+        &self,
+        transmit: &udp::Transmit,
+        connection_id: Option<u64>,
+    ) -> (io::Result<()>, u64) {
+        let mut sent_ns = None;
+        let result = self.io.try_io(Interest::WRITABLE, || {
+            let (result, at_ns) =
+                self.inner
+                    .try_send_timed((&self.io).into(), transmit, connection_id);
+            sent_ns = Some(at_ns);
+            result
+        });
+        // A socket tokio does not consider writable makes no system call at all.
+        (result, sent_ns.unwrap_or_else(moq_trace::now_ns))
+    }
+
     fn poll_recv(
         &self,
         cx: &mut Context,

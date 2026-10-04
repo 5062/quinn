@@ -928,9 +928,16 @@ impl ConnectionRef {
         {
             let connection_id = this.trace_connection_id;
             let mut state = this.state.lock("ConnectionRef::new");
+            // The path event names the socket this connection sends from, so analysis can
+            // join its packets to a packet capture. An unreadable address leaves only the
+            // peer and the port to join on.
+            let local = state
+                .socket
+                .local_addr()
+                .unwrap_or_else(|_| SocketAddr::from((std::net::Ipv6Addr::UNSPECIFIED, 0)));
             state
                 .inner
-                .set_moq_trace(moq_trace::global(), connection_id);
+                .set_moq_trace(moq_trace::global(), connection_id, local);
         }
         this
     }
@@ -1014,8 +1021,9 @@ pub(crate) struct State {
     io_poller: Pin<Box<dyn UdpPoller>>,
     runtime: Arc<dyn Runtime>,
     send_buffer: Vec<u8>,
-    /// We buffer a transmit when the underlying I/O would block
-    buffered_transmit: Option<proto::Transmit>,
+    /// We buffer a transmit when the underlying I/O would block, with the traced packets it
+    /// carries, which end when a send finally accepts it
+    buffered_transmit: Option<(proto::Transmit, proto::TransmitTrace)>,
 }
 
 impl State {
@@ -1030,8 +1038,8 @@ impl State {
 
         loop {
             // Retry the last transmit, or get a new one.
-            let t = match self.buffered_transmit.take() {
-                Some(t) => t,
+            let (t, trace) = match self.buffered_transmit.take() {
+                Some(buffered) => buffered,
                 None => {
                     self.send_buffer.clear();
                     self.send_buffer.reserve(self.inner.current_mtu() as usize);
@@ -1044,7 +1052,7 @@ impl State {
                                 None => 1,
                                 Some(s) => t.size.div_ceil(s), // round up
                             };
-                            t
+                            (t, self.inner.take_moq_trace_transmit())
                         }
                         None => break,
                     }
@@ -1053,38 +1061,35 @@ impl State {
 
             if self.io_poller.as_mut().poll_writable(cx)?.is_pending() {
                 // Retry after a future wakeup
-                self.buffered_transmit = Some(t);
+                self.buffered_transmit = Some((t, trace));
                 return Ok(false);
             }
 
             let len = t.size;
-            let trace = self.inner.moq_trace_socket(moq_trace::Direction::Tx);
-            let send_result = self
-                .socket
-                .try_send(&udp_transmit(&t, &self.send_buffer[..len]));
-            {
-                let outcome = match &send_result {
-                    Ok(()) => moq_trace::SocketOutcome::Success,
-                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                        moq_trace::SocketOutcome::WouldBlock
-                    }
-                    Err(_) => moq_trace::SocketOutcome::Error,
-                };
-                let datagrams = t.segment_size.map_or(1, |size| len.div_ceil(size));
-                trace.finish(outcome, moq_trace::SocketStats::new(1, datagrams, len));
-            }
-            let retry = match send_result {
-                Ok(()) => false,
-                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => true,
-                Err(e) => return Err(e),
-            };
-            if retry {
-                // We thought the socket was writable, but it wasn't. Retry so that either another
-                // `poll_writable` call determines that the socket is indeed not writable and
-                // registers us for a wakeup, or the send succeeds if this really was just a
-                // transient failure.
-                self.buffered_transmit = Some(t);
-                continue;
+            // The send reports its system call's own result, so a datagram the kernel
+            // discarded is never traced as sent. The packets the transmit carried end when
+            // that call returned.
+            let (send_result, sent_ns) = self.socket.try_send_timed(
+                &udp_transmit(&t, &self.send_buffer[..len]),
+                self.inner.moq_trace_connection_id(),
+            );
+            match send_result {
+                Ok(()) => trace.sent(sent_ns),
+                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                    // We thought the socket was writable, but it wasn't. Retry so that either
+                    // another `poll_writable` call determines that the socket is indeed not
+                    // writable and registers us for a wakeup, or the send succeeds if this
+                    // really was just a transient failure.
+                    self.buffered_transmit = Some((t, trace));
+                    continue;
+                }
+                Err(e) => {
+                    // UDP is unreliable, so a failed send is logged and the transmit
+                    // discarded, as `quinn-udp` did before reporting the system call's own
+                    // result. Path MTU probes routinely fail with `EMSGSIZE`.
+                    trace.dropped(sent_ns);
+                    tracing::debug!("send failed: {e}");
+                }
             }
 
             if transmits >= MAX_TRANSMIT_DATAGRAMS {

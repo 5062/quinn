@@ -115,6 +115,15 @@ impl AsyncUdpSocket for UdpSocket {
         self.inner.send((&self.io).into(), transmit)
     }
 
+    fn try_send_timed(
+        &self,
+        transmit: &udp::Transmit,
+        connection_id: Option<u64>,
+    ) -> (io::Result<()>, u64) {
+        self.inner
+            .try_send_timed((&self.io).into(), transmit, connection_id)
+    }
+
     fn poll_recv(
         &self,
         cx: &mut Context,

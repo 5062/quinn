@@ -29,6 +29,9 @@ pub(crate) struct DatagramConnectionEvent {
 
 #[derive(Debug)]
 pub(crate) struct DatagramTrace {
+    /// When the receive system call that returned the datagram completed.
+    pub(crate) read_ns: u64,
+    /// When the endpoint began processing the datagram.
     pub(crate) start_ns: u64,
     pub(crate) header_parse_end_ns: u64,
     pub(crate) enqueued_ns: Option<u64>,

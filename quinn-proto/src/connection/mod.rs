@@ -253,6 +253,51 @@ pub struct Connection {
     version: u32,
     moq_trace: moq_trace::Handle,
     moq_trace_connection_id: Option<u64>,
+    /// The local address this connection sends from, for its `moq-trace` path events
+    moq_trace_local: Option<SocketAddr>,
+    /// The traced packets built into the transmit being assembled
+    moq_trace_transmit: TransmitTrace,
+}
+
+/// The traced packets of one transmit, held until the send that carries them returns
+///
+/// A packet's `moq-trace` lifecycle ends when the send system call that accepted its datagram
+/// returns, so the packets of a transmit wait in their `send_queue` phase until the caller
+/// learns the send's outcome. Dropping the value records every packet as abandoned.
+#[derive(Default)]
+#[must_use = "dropping a transmit trace records its packets as abandoned"]
+pub struct TransmitTrace(Vec<(moq_trace::PacketTrace, moq_trace::PacketPhaseTrace)>);
+
+impl TransmitTrace {
+    /// End every packet at `at_ns`, when the send system call that accepted the transmit
+    /// returned
+    pub fn sent(self, at_ns: u64) {
+        self.finish(moq_trace::PacketOutcome::Success, at_ns);
+    }
+
+    /// End every packet as dropped at `at_ns`, when the send system call that failed returned
+    ///
+    /// A send the kernel rejected never put the packets on the wire, whatever the caller
+    /// does with the error.
+    pub fn dropped(self, at_ns: u64) {
+        self.finish(moq_trace::PacketOutcome::Dropped, at_ns);
+    }
+
+    /// Whether the transmit holds no traced packet
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    fn finish(self, outcome: moq_trace::PacketOutcome, at_ns: u64) {
+        for (packet, queue) in self.0 {
+            queue.finish_at(outcome, at_ns);
+            packet.finish_at(outcome, at_ns);
+        }
+    }
+
+    pub(super) fn push(&mut self, packet: moq_trace::PacketTrace, queue: moq_trace::PacketPhaseTrace) {
+        self.0.push((packet, queue));
+    }
 }
 
 impl Connection {
@@ -372,6 +417,8 @@ impl Connection {
             version,
             moq_trace: moq_trace::Handle::disabled(),
             moq_trace_connection_id: None,
+            moq_trace_local: None,
+            moq_trace_transmit: TransmitTrace::default(),
         };
         if path_validated {
             this.on_path_validated();
@@ -384,16 +431,44 @@ impl Connection {
         this
     }
 
-    /// Install the trace handle and stable identifier used by Quinn instrumentation.
-    pub fn set_moq_trace(&mut self, handle: moq_trace::Handle, connection_id: u64) {
+    /// Install the trace handle and stable identifier used by Quinn instrumentation, and
+    /// record the connection's path from `local`, the address it sends from
+    ///
+    /// When the socket is bound to the wildcard address, `local` may be the wildcard unless the
+    /// connection learned the address its peer reached it on.
+    pub fn set_moq_trace(&mut self, handle: moq_trace::Handle, connection_id: u64, local: SocketAddr) {
         self.moq_trace = handle;
         self.moq_trace_connection_id = Some(connection_id);
+        let local = match self.local_ip {
+            Some(ip) => SocketAddr::new(ip, local.port()),
+            None => local,
+        };
+        self.moq_trace_local = Some(local);
+        self.record_moq_trace_path();
     }
 
-    /// Start a sampled socket operation for this connection.
-    pub fn moq_trace_socket(&self, direction: moq_trace::Direction) -> moq_trace::SocketTrace {
-        self.moq_trace
-            .socket(direction, self.moq_trace_connection_id)
+    /// The identifier this connection's `moq-trace` events carry, once tracing is installed
+    pub fn moq_trace_connection_id(&self) -> Option<u64> {
+        self.moq_trace_connection_id
+    }
+
+    /// Take the traced packets of the transmit the last `poll_transmit` returned
+    ///
+    /// The caller ends them when the send carrying the transmit returns.
+    pub fn take_moq_trace_transmit(&mut self) -> TransmitTrace {
+        mem::take(&mut self.moq_trace_transmit)
+    }
+
+    /// Record the path the connection now sends on.
+    fn record_moq_trace_path(&self) {
+        if let (Some(connection_id), Some(local)) =
+            (self.moq_trace_connection_id, self.moq_trace_local)
+        {
+            self.moq_trace.connection_path(
+                connection_id,
+                moq_trace::ConnectionPath::new(local, self.path.remote),
+            );
+        }
     }
 
     /// Returns the next time at which `handle_timeout` should be called
@@ -485,6 +560,8 @@ impl Connection {
         buf: &mut Vec<u8>,
     ) -> Option<Transmit> {
         assert!(max_datagrams != 0);
+        // Packets of an earlier transmit nobody took were never handed to a send.
+        drop(mem::take(&mut self.moq_trace_transmit));
         let max_datagrams = match self.config.enable_segmentation_offload {
             false => 1,
             true => max_datagrams,
@@ -1150,7 +1227,7 @@ impl Connection {
                         let mut context =
                             moq_trace::PacketContext::new(moq_trace::Direction::Rx, connection_id)
                                 .with_byte_len(first_decode.len())
-                                .with_start_ns(trace_timing.start_ns);
+                                .with_start_ns(trace_timing.read_ns);
                         if let Some(space) = first_decode.space() {
                             context = context.with_space(moq_trace_packet_space(space));
                         }
@@ -1159,7 +1236,12 @@ impl Connection {
                 );
                 {
                     // These intervals completed before a stable connection trace ID was available.
-                    // Emit them together now while preserving their original timestamps.
+                    // Emit them together now while preserving their original timestamps. The
+                    // packet starts when the receive system call returned, and waits in
+                    // `read_queue` until the endpoint processes its datagram.
+                    trace
+                        .phase_at(moq_trace::PacketPhase::ReadQueue, trace_timing.read_ns)
+                        .finish_at(moq_trace::PacketOutcome::Success, trace_timing.start_ns);
                     trace
                         .phase_at(moq_trace::PacketPhase::HeaderParse, trace_timing.start_ns)
                         .finish_at(
@@ -1187,7 +1269,7 @@ impl Connection {
 
                 if let Some(data) = remaining {
                     self.stats.udp_rx.bytes += data.len() as u64;
-                    self.handle_coalesced(now, remote, ecn, data);
+                    self.handle_coalesced(now, remote, ecn, data, trace_timing.read_ns);
                 }
 
                 self.config.qlog_sink.emit_recovery_metrics(
@@ -2083,7 +2165,9 @@ impl Connection {
             &moq_trace::PacketTrace::disabled(),
         )?;
         if let Some(data) = remaining {
-            self.handle_coalesced(now, remote, ecn, data);
+            // The first datagram precedes the connection's trace ID, so its packets are not
+            // traced and their read time does not matter.
+            self.handle_coalesced(now, remote, ecn, data, moq_trace::now_ns());
         }
 
         self.config.qlog_sink.emit_recovery_metrics(
@@ -2273,19 +2357,26 @@ impl Connection {
         remote: SocketAddr,
         ecn: Option<EcnCodepoint>,
         data: BytesMut,
+        read_ns: u64,
     ) {
         self.path.total_recvd = self.path.total_recvd.saturating_add(data.len() as u64);
         let mut remaining = Some(data);
         while let Some(data) = remaining {
+            // A coalesced packet arrived in the same datagram, so it starts when the same
+            // receive system call returned and waits until its own processing begins.
             let mut trace = self.moq_trace_connection_id.map_or_else(
                 moq_trace::PacketTrace::disabled,
                 |connection_id| {
                     self.moq_trace.packet(
                         moq_trace::PacketContext::new(moq_trace::Direction::Rx, connection_id)
-                            .with_byte_len(data.len()),
+                            .with_byte_len(data.len())
+                            .with_start_ns(read_ns),
                     )
                 },
             );
+            trace
+                .phase_at(moq_trace::PacketPhase::ReadQueue, read_ns)
+                .finish(moq_trace::PacketOutcome::Success);
             let parse_trace = trace.phase(moq_trace::PacketPhase::HeaderParse);
             match PartialDecode::new(
                 data,
@@ -2922,21 +3013,24 @@ impl Connection {
                         frame.offset,
                         frame.offset + frame.data.len() as u64,
                     );
-                    let received = self.streams.received(frame, payload_len);
+                    let received = self.streams.received_buffered(frame, payload_len);
                     frame_trace.finish(if received.is_ok() {
                         moq_trace::PacketOutcome::Success
                     } else {
                         moq_trace::PacketOutcome::Malformed
                     });
+                    // The frame's bytes are in the stream's receive buffer, and the application
+                    // has not been told, so this instant is the frame's acceptance. A frame the
+                    // stream discarded is recorded as dropped and covers nothing.
                     trace.stream_frame(
                         stream_frame,
-                        if received.is_ok() {
-                            moq_trace::PacketOutcome::Success
-                        } else {
-                            moq_trace::PacketOutcome::Malformed
+                        match &received {
+                            Ok((_, true)) => moq_trace::PacketOutcome::Success,
+                            Ok((_, false)) => moq_trace::PacketOutcome::Dropped,
+                            Err(_) => moq_trace::PacketOutcome::Malformed,
                         },
                     );
-                    if received?.should_transmit() {
+                    if received?.0.should_transmit() {
                         self.spaces[SpaceId::Data].pending.max_data = true;
                     }
                 }
@@ -3230,6 +3324,7 @@ impl Connection {
         let prev_pto = self.pto(SpaceId::Data);
 
         let mut prev = mem::replace(&mut self.path, new_path);
+        self.record_moq_trace_path();
         // Don't clobber the original path if the previous one hasn't been validated yet
         if prev.challenge.is_none() {
             prev.challenge = Some(self.rng.random());

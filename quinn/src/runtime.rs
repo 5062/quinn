@@ -58,6 +58,24 @@ pub trait AsyncUdpSocket: Send + Sync + Debug + 'static {
     /// to register the calling task to be woken when a send should be attempted again.
     fn try_send(&self, transmit: &Transmit) -> io::Result<()>;
 
+    /// Send like [`AsyncUdpSocket::try_send`], but report the final send system call's own
+    /// result, before any error policy, and when that call returned on the `moq-trace` clock
+    ///
+    /// A connection ends the `moq-trace` lifecycles of the packets a transmit carried at the
+    /// returned instant, and records them as dropped when the result is an error other than
+    /// [`io::ErrorKind::WouldBlock`]. The default reads the clock after [`try_send`] returns.
+    ///
+    /// [`try_send`]: AsyncUdpSocket::try_send
+    fn try_send_timed(
+        &self,
+        transmit: &Transmit,
+        connection_id: Option<u64>,
+    ) -> (io::Result<()>, u64) {
+        let _ = connection_id;
+        let result = self.try_send(transmit);
+        (result, moq_trace::now_ns())
+    }
+
     /// Receive UDP datagrams, or register to be woken if receiving may succeed in the future
     fn poll_recv(
         &self,

@@ -310,7 +310,10 @@ impl PacketBuilder {
                     );
                 }
             }
-            trace.finish(moq_trace::PacketOutcome::Success);
+            // The packet's lifecycle ends when the send carrying it returns, so it waits in
+            // `send_queue` with the rest of the transmit until the caller learns the outcome.
+            let queue = trace.phase(moq_trace::PacketPhase::SendQueue);
+            conn.moq_trace_transmit.push(trace, queue);
         }
         conn.config.qlog_sink.emit_packet_sent(
             self.exact_number,
