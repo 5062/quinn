@@ -22,8 +22,8 @@ fast-apple-datapath = []
 
 [dependencies]
 libc = "0.2.158"
-moq-trace = { version = "0.1", default-features = false }
 log = { workspace = true, optional = true }
+quic-trace = { version = "0.1", default-features = false }
 tracing = { workspace = true, optional = true }
 
 [target.'cfg(not(all(target_family = "wasm", target_os = "unknown")))'.dependencies]

@@ -115,11 +115,22 @@ pub struct RecvMeta {
     /// Populated on platforms: Windows, Linux, Android (API level > 25),
     /// FreeBSD, OpenBSD, NetBSD, macOS, and iOS.
     pub dst_ip: Option<IpAddr>,
-    /// When the receive system call that filled this buffer returned, on the `moq-trace`
+    /// When the receive system call that filled this buffer returned, on the `quic-trace`
     /// clock
     ///
-    /// Every packet in the buffer starts its `moq-trace` lifecycle at this instant.
-    pub read_ns: u64,
+    /// Every packet in the buffer starts its `quic-trace` lifecycle at this instant. `None`
+    /// when no transport event would be recorded, so an untraced build reads no clock, and
+    /// the buffer's packets are then not traced.
+    pub read_ns: Option<u64>,
+}
+
+/// The `quic-trace` clock, when any transport event would be recorded.
+///
+/// A platform that does not trace its system calls still reports when they returned, read
+/// here right after, so the packets they carried start or end at that instant.
+#[allow(dead_code)] // unused where the platform module traces its own system calls
+fn traced_now_ns() -> Option<u64> {
+    quic_trace::global().is_enabled().then(quic_trace::now_ns)
 }
 
 impl Default for RecvMeta {
@@ -131,7 +142,7 @@ impl Default for RecvMeta {
             stride: 0,
             ecn: None,
             dst_ip: None,
-            read_ns: 0,
+            read_ns: None,
         }
     }
 }

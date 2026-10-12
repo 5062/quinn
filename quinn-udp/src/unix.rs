@@ -225,7 +225,7 @@ impl UdpSocketState {
     }
 
     /// Sends a [`Transmit`] like [`UdpSocketState::try_send`], and also returns when the
-    /// final send system call returned, on the `moq-trace` clock.
+    /// final send system call returned, on the `quic-trace` clock.
     ///
     /// The result is the system call's own, before any error policy, so a caller can tell
     /// a datagram the kernel accepted from one it discarded. Each system call is recorded
@@ -236,7 +236,7 @@ impl UdpSocketState {
         socket: UdpSockRef<'_>,
         transmit: &Transmit<'_>,
         connection_id: Option<u64>,
-    ) -> (io::Result<()>, u64) {
+    ) -> (io::Result<()>, Option<u64>) {
         send(self, socket.0, transmit, connection_id)
     }
 
@@ -324,14 +324,14 @@ fn send(
     io: SockRef<'_>,
     transmit: &Transmit<'_>,
     connection_id: Option<u64>,
-) -> (io::Result<()>, u64) {
+) -> (io::Result<()>, Option<u64>) {
     #[allow(unused_mut)] // only mutable on FreeBSD
     let mut encode_src_ip = true;
     #[cfg(target_os = "freebsd")]
     {
         let addr = match io.local_addr() {
             Ok(addr) => addr,
-            Err(e) => return (Err(e), moq_trace::now_ns()),
+            Err(e) => return (Err(e), None),
         };
         let is_ipv4 = addr.family() == libc::AF_INET as libc::sa_family_t;
         if is_ipv4 {
@@ -355,9 +355,9 @@ fn send(
     );
 
     loop {
-        let syscall = Syscall::start(moq_trace::Direction::Tx, connection_id);
+        let syscall = Syscall::start(quic_trace::Direction::Tx, connection_id);
         let n = unsafe { libc::sendmsg(io.as_raw_fd(), &msg_hdr, 0) };
-        let sent_ns = moq_trace::now_ns();
+        let sent_ns = syscall.returned();
 
         if n >= 0 {
             syscall.succeeded(transmit_stats(transmit), sent_ns);
@@ -416,7 +416,7 @@ fn send(
     io: SockRef<'_>,
     transmit: &Transmit<'_>,
     connection_id: Option<u64>,
-) -> (io::Result<()>, u64) {
+) -> (io::Result<()>, Option<u64>) {
     let mut hdrs = unsafe { mem::zeroed::<[msghdr_x; BATCH_SIZE]>() };
     let mut iovs = unsafe { mem::zeroed::<[libc::iovec; BATCH_SIZE]>() };
     let mut ctrls = [cmsg::Aligned([0u8; CMSG_LEN]); BATCH_SIZE];
@@ -449,9 +449,9 @@ fn send(
         cnt += 1;
     }
     loop {
-        let syscall = Syscall::start(moq_trace::Direction::Tx, connection_id);
+        let syscall = Syscall::start(quic_trace::Direction::Tx, connection_id);
         let n = unsafe { sendmsg_x(io.as_raw_fd(), hdrs.as_ptr(), cnt as u32, 0) };
-        let sent_ns = moq_trace::now_ns();
+        let sent_ns = syscall.returned();
 
         if n >= 0 {
             syscall.succeeded(transmit_stats(transmit), sent_ns);
@@ -474,7 +474,7 @@ fn send(
     io: SockRef<'_>,
     transmit: &Transmit<'_>,
     connection_id: Option<u64>,
-) -> (io::Result<()>, u64) {
+) -> (io::Result<()>, Option<u64>) {
     let mut hdr: libc::msghdr = unsafe { mem::zeroed() };
     let mut iov: libc::iovec = unsafe { mem::zeroed() };
     let mut ctrl = cmsg::Aligned([0u8; CMSG_LEN]);
@@ -489,9 +489,9 @@ fn send(
         state.sendmsg_einval(),
     );
     loop {
-        let syscall = Syscall::start(moq_trace::Direction::Tx, connection_id);
+        let syscall = Syscall::start(quic_trace::Direction::Tx, connection_id);
         let n = unsafe { libc::sendmsg(io.as_raw_fd(), &hdr, 0) };
-        let sent_ns = moq_trace::now_ns();
+        let sent_ns = syscall.returned();
 
         if n >= 0 {
             syscall.succeeded(transmit_stats(transmit), sent_ns);
@@ -523,7 +523,7 @@ fn recv(io: SockRef<'_>, bufs: &mut [IoSliceMut<'_>], meta: &mut [RecvMeta]) -> 
         );
     }
     let (msg_count, syscall, read_ns) = loop {
-        let syscall = Syscall::start(moq_trace::Direction::Rx, None);
+        let syscall = Syscall::start(quic_trace::Direction::Rx, None);
         let n = unsafe {
             libc::recvmmsg(
                 io.as_raw_fd(),
@@ -533,7 +533,7 @@ fn recv(io: SockRef<'_>, bufs: &mut [IoSliceMut<'_>], meta: &mut [RecvMeta]) -> 
                 ptr::null_mut::<libc::timespec>(),
             )
         };
-        let read_ns = moq_trace::now_ns();
+        let read_ns = syscall.returned();
 
         if n >= 0 {
             break (n, syscall, read_ns);
@@ -571,9 +571,9 @@ fn recv(io: SockRef<'_>, bufs: &mut [IoSliceMut<'_>], meta: &mut [RecvMeta]) -> 
         prepare_recv(&mut bufs[i], &mut names[i], &mut ctrls[i], &mut hdrs[i]);
     }
     let (msg_count, syscall, read_ns) = loop {
-        let syscall = Syscall::start(moq_trace::Direction::Rx, None);
+        let syscall = Syscall::start(quic_trace::Direction::Rx, None);
         let n = unsafe { recvmsg_x(io.as_raw_fd(), hdrs.as_mut_ptr(), max_msg_count as _, 0) };
-        let read_ns = moq_trace::now_ns();
+        let read_ns = syscall.returned();
 
         if n >= 0 {
             break (n, syscall, read_ns);
@@ -602,9 +602,9 @@ fn recv(io: SockRef<'_>, bufs: &mut [IoSliceMut<'_>], meta: &mut [RecvMeta]) -> 
     let mut hdr = unsafe { mem::zeroed::<libc::msghdr>() };
     prepare_recv(&mut bufs[0], &mut name, &mut ctrl, &mut hdr);
     let (n, syscall, read_ns) = loop {
-        let syscall = Syscall::start(moq_trace::Direction::Rx, None);
+        let syscall = Syscall::start(quic_trace::Direction::Rx, None);
         let n = unsafe { libc::recvmsg(io.as_raw_fd(), &mut hdr, 0) };
-        let read_ns = moq_trace::now_ns();
+        let read_ns = syscall.returned();
 
         if hdr.msg_flags & libc::MSG_TRUNC != 0 {
             syscall.failed(&io::Error::from(io::ErrorKind::InvalidData), read_ns);
@@ -635,41 +635,55 @@ const CMSG_LEN: usize = 88;
 ///
 /// The clock is read the instant the call returns, and that instant ends the operation.
 /// The same instant reaches the caller, which ends the packets the call carried with it,
-/// so the socket operation and its packets agree exactly.
-struct Syscall(moq_trace::SocketTrace);
+/// so the socket operation and its packets agree exactly. When no transport event would be
+/// recorded, no clock is read and the call reports no instant.
+struct Syscall {
+    trace: quic_trace::SocketTrace,
+    clock: bool,
+}
 
 impl Syscall {
-    fn start(direction: moq_trace::Direction, connection_id: Option<u64>) -> Self {
-        Self(moq_trace::global().socket(direction, connection_id))
+    fn start(direction: quic_trace::Direction, connection_id: Option<u64>) -> Self {
+        let handle = quic_trace::global();
+        Self {
+            clock: handle.is_enabled(),
+            trace: handle.socket(direction, connection_id),
+        }
     }
 
-    fn succeeded(self, stats: moq_trace::SocketStats, at_ns: u64) {
-        self.0
-            .finish_at(moq_trace::SocketOutcome::Success, stats, at_ns);
+    /// When the call returned, on the `quic-trace` clock, if tracing is on.
+    fn returned(&self) -> Option<u64> {
+        self.clock.then(quic_trace::now_ns)
+    }
+
+    fn succeeded(self, stats: quic_trace::SocketStats, at_ns: Option<u64>) {
+        self.finish(quic_trace::SocketOutcome::Success, stats, at_ns);
     }
 
     /// Record the call's own error, before any error policy of the caller.
-    fn failed(self, error: &io::Error, at_ns: u64) {
-        let outcome = match error.kind() {
-            io::ErrorKind::WouldBlock => moq_trace::SocketOutcome::WouldBlock,
-            io::ErrorKind::ConnectionReset => moq_trace::SocketOutcome::ConnectionReset,
-            _ => moq_trace::SocketOutcome::Error,
-        };
-        self.0
-            .finish_at(outcome, moq_trace::SocketStats::default(), at_ns);
+    fn failed(self, error: &io::Error, at_ns: Option<u64>) {
+        let outcome = quic_trace::SocketOutcome::from_io_error(error);
+        self.finish(outcome, quic_trace::SocketStats::default(), at_ns);
+    }
+
+    fn finish(self, outcome: quic_trace::SocketOutcome, stats: quic_trace::SocketStats, at_ns: Option<u64>) {
+        match at_ns {
+            Some(at_ns) => self.trace.finish_at(outcome, stats, at_ns),
+            None => self.trace.finish(outcome, stats),
+        }
     }
 }
 
 /// The buffers, datagrams, and bytes one send system call carried.
-fn transmit_stats(transmit: &Transmit<'_>) -> moq_trace::SocketStats {
+fn transmit_stats(transmit: &Transmit<'_>) -> quic_trace::SocketStats {
     let bytes = transmit.contents.len();
     let datagrams = transmit.segment_size.map_or(1, |size| bytes.div_ceil(size));
-    moq_trace::SocketStats::new(1, datagrams, bytes)
+    quic_trace::SocketStats::new(1, datagrams, bytes)
 }
 
 /// The buffers, datagrams, and bytes one receive system call filled.
-fn recv_stats(meta: &[RecvMeta]) -> moq_trace::SocketStats {
-    moq_trace::SocketStats::new(
+fn recv_stats(meta: &[RecvMeta]) -> quic_trace::SocketStats {
+    quic_trace::SocketStats::new(
         meta.len(),
         meta.iter()
             .map(|meta| meta.len.div_ceil(meta.stride.max(1)))
@@ -895,7 +909,7 @@ fn decode_recv(
         ecn: EcnCodepoint::from_bits(ecn_bits),
         dst_ip,
         // The caller stamps the receive system call's completion.
-        read_ns: 0,
+        read_ns: None,
     }
 }
 

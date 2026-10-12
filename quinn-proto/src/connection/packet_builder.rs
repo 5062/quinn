@@ -25,8 +25,8 @@ pub(super) struct PacketBuilder {
     pub(super) max_size: usize,
     pub(super) tag_len: usize,
     pub(super) _span: tracing::span::EnteredSpan,
-    trace: moq_trace::PacketTrace,
-    encode_trace: moq_trace::PacketPhaseTrace,
+    trace: quic_trace::PacketTrace,
+    encode_trace: quic_trace::PacketPhaseTrace,
 }
 
 impl PacketBuilder {
@@ -88,13 +88,13 @@ impl PacketBuilder {
 
         let span = trace_span!("send", space = ?space_id, pn = exact_number).entered();
 
-        let trace = conn.moq_trace_connection_id.map_or_else(
-            moq_trace::PacketTrace::disabled,
+        let trace = conn.quic_trace_connection_id.map_or_else(
+            quic_trace::PacketTrace::disabled,
             |connection_id| {
-                conn.moq_trace.packet(
-                    moq_trace::PacketContext::new(moq_trace::Direction::Tx, connection_id)
+                conn.quic_trace.packet(
+                    quic_trace::PacketContext::new(quic_trace::Direction::Tx, connection_id)
                         .with_number(exact_number)
-                        .with_space(super::moq_trace_packet_space(space_id)),
+                        .with_space(super::quic_trace_packet_space(space_id)),
                 )
             },
         );
@@ -168,7 +168,7 @@ impl PacketBuilder {
         let max_size = buffer_capacity - tag_len;
         debug_assert!(max_size >= min_size);
 
-        let encode_trace = trace.phase(moq_trace::PacketPhase::FrameEncode);
+        let encode_trace = trace.phase(quic_trace::PacketPhase::FrameEncode);
 
         Some(Self {
             datagram_start,
@@ -285,10 +285,10 @@ impl PacketBuilder {
         let len = buffer.len() - encode_start;
         let mut trace = self.trace;
         {
-            self.encode_trace.finish(moq_trace::PacketOutcome::Success);
+            self.encode_trace.finish(quic_trace::PacketOutcome::Success);
             trace.set_byte_len(len);
         }
-        let encrypt_trace = trace.phase(moq_trace::PacketPhase::PacketEncrypt);
+        let encrypt_trace = trace.phase(quic_trace::PacketPhase::PacketEncrypt);
         let packet_buf = &mut buffer[encode_start..];
         self.partial_encode.finish(
             packet_buf,
@@ -297,23 +297,22 @@ impl PacketBuilder {
         );
 
         {
-            encrypt_trace.finish(moq_trace::PacketOutcome::Success);
+            encrypt_trace.finish(quic_trace::PacketOutcome::Success);
             if let Some(sent) = _sent {
                 for frame in &sent.stream_frames {
                     trace.stream_frame(
-                        moq_trace::StreamFrame::new(
+                        quic_trace::StreamFrame::new(
                             frame.id.0,
                             frame.offsets.start,
                             frame.offsets.end,
                         ),
-                        moq_trace::PacketOutcome::Success,
+                        quic_trace::PacketOutcome::Success,
                     );
                 }
             }
             // The packet's lifecycle ends when the send carrying it returns, so it waits in
             // `send_queue` with the rest of the transmit until the caller learns the outcome.
-            let queue = trace.phase(moq_trace::PacketPhase::SendQueue);
-            conn.moq_trace_transmit.push(trace, queue);
+            conn.quic_trace_transmit.push(trace);
         }
         conn.config.qlog_sink.emit_packet_sent(
             self.exact_number,

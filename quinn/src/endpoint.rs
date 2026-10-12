@@ -823,11 +823,8 @@ impl RecvState {
                                     // Ignoring errors from dropped connections that haven't yet been cleaned up
                                     received_connection_packet = true;
                                     let sender = self.connections.senders.get_mut(&handle).unwrap();
-                                    let event = {
-                                        let mut event = event;
-                                        event.record_moq_trace_enqueued(moq_trace::now_ns());
-                                        event
-                                    };
+                                    let mut event = event;
+                                    event.record_quic_trace_enqueued();
                                     let _ = sender.send(ConnectionEvent::Proto(event));
                                 }
                                 Some(DatagramEvent::Response(transmit)) => {

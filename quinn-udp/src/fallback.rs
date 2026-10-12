@@ -53,7 +53,7 @@ impl UdpSocketState {
     }
 
     /// Sends a [`Transmit`] like [`UdpSocketState::try_send`], and also returns when the
-    /// send returned, on the `moq-trace` clock.
+    /// send returned, on the `quic-trace` clock.
     ///
     /// This platform's sends are not traced at the system call, so the instant is read
     /// after the send returns.
@@ -62,9 +62,9 @@ impl UdpSocketState {
         socket: UdpSockRef<'_>,
         transmit: &Transmit<'_>,
         _connection_id: Option<u64>,
-    ) -> (io::Result<()>, u64) {
+    ) -> (io::Result<()>, Option<u64>) {
         let result = send(socket, transmit);
-        (result, moq_trace::now_ns())
+        (result, crate::traced_now_ns())
     }
 
     pub fn recv(
@@ -87,7 +87,7 @@ impl UdpSocketState {
             addr: addr.as_socket().unwrap(),
             ecn: None,
             dst_ip: None,
-            read_ns: moq_trace::now_ns(),
+            read_ns: crate::traced_now_ns(),
         };
         Ok(1)
     }

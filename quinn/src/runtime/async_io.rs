@@ -119,7 +119,7 @@ impl AsyncUdpSocket for UdpSocket {
         &self,
         transmit: &udp::Transmit,
         connection_id: Option<u64>,
-    ) -> (io::Result<()>, u64) {
+    ) -> (io::Result<()>, Option<u64>) {
         self.inner
             .try_send_timed((&self.io).into(), transmit, connection_id)
     }

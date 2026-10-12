@@ -72,7 +72,7 @@ impl AsyncUdpSocket for UdpSocket {
         &self,
         transmit: &udp::Transmit,
         connection_id: Option<u64>,
-    ) -> (io::Result<()>, u64) {
+    ) -> (io::Result<()>, Option<u64>) {
         let mut sent_ns = None;
         let result = self.io.try_io(Interest::WRITABLE, || {
             let (result, at_ns) =
@@ -82,7 +82,7 @@ impl AsyncUdpSocket for UdpSocket {
             result
         });
         // A socket tokio does not consider writable makes no system call at all.
-        (result, sent_ns.unwrap_or_else(moq_trace::now_ns))
+        (result, sent_ns.flatten())
     }
 
     fn poll_recv(

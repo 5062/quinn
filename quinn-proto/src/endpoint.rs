@@ -152,14 +152,17 @@ impl Endpoint {
         data: BytesMut,
         buf: &mut Vec<u8>,
     ) -> Option<DatagramEvent> {
-        self.handle_at(now, remote, local_ip, ecn, data, buf, moq_trace::now_ns())
+        let read_ns = quic_trace::global().is_enabled().then(quic_trace::now_ns);
+        self.handle_at(now, remote, local_ip, ecn, data, buf, read_ns)
     }
 
     /// Process an incoming UDP datagram returned by a receive system call that completed at
-    /// `read_ns` on the `moq-trace` clock
+    /// `read_ns` on the `quic-trace` clock
     ///
-    /// Every packet in the datagram starts its `moq-trace` lifecycle at `read_ns`, and the
-    /// time until its processing begins is its `read_queue` phase.
+    /// Every packet in the datagram starts its `quic-trace` lifecycle at `read_ns`, and the
+    /// time until its processing begins is its `read_queue` phase. A datagram without
+    /// `read_ns` came from an untraced read, so its packets are not traced and its handling
+    /// reads no clock.
     #[allow(clippy::too_many_arguments)]
     pub fn handle_at(
         &mut self,
@@ -169,11 +172,11 @@ impl Endpoint {
         ecn: Option<EcnCodepoint>,
         data: BytesMut,
         buf: &mut Vec<u8>,
-        read_ns: u64,
+        read_ns: Option<u64>,
     ) -> Option<DatagramEvent> {
         // Partially decode packet or short-circuit if unable
         let datagram_len = data.len();
-        let packet_start_ns = moq_trace::now_ns();
+        let packet_start_ns = read_ns.map(|_| quic_trace::now_ns());
         let event = match PartialDecode::new(
             data,
             &FixedLengthConnectionIdParser::new(self.local_cid_generator.cid_len()),
@@ -181,19 +184,22 @@ impl Endpoint {
             self.config.grease_quic_bit,
         ) {
             Ok((first_decode, remaining)) => {
-                let moq_trace = crate::shared::DatagramTrace {
-                    read_ns,
-                    start_ns: packet_start_ns,
-                    header_parse_end_ns: moq_trace::now_ns(),
-                    enqueued_ns: None,
-                };
+                let quic_trace =
+                    read_ns
+                        .zip(packet_start_ns)
+                        .map(|(read_ns, start_ns)| crate::shared::DatagramTrace {
+                            read_ns,
+                            start_ns,
+                            header_parse_end_ns: quic_trace::now_ns(),
+                            enqueued_ns: None,
+                        });
                 DatagramConnectionEvent {
                     now,
                     remote,
                     ecn,
                     first_decode,
                     remaining,
-                    moq_trace,
+                    quic_trace,
                 }
             }
             Err(PacketDecodeError::UnsupportedVersion {

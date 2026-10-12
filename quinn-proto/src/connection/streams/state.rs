@@ -265,7 +265,7 @@ impl StreamsState {
     ///
     /// If successful, returns whether a `MAX_DATA` frame needs to be transmitted.
     /// A frame for a closed, finished, or stopped stream is accepted for flow control but its
-    /// data is discarded, so `moq-trace` records it as dropped rather than as delivered.
+    /// data is discarded, so `quic-trace` records it as dropped rather than as delivered.
     pub(crate) fn received_buffered(
         &mut self,
         frame: frame::Stream,

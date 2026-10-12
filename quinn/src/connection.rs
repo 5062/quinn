@@ -920,7 +920,7 @@ impl ConnectionRef {
                 buffered_transmit: None,
             }),
             shared: Shared::default(),
-            trace_connection_id: moq_trace::next_connection_id(),
+            trace_connection_id: quic_trace::next_connection_id(),
         }));
         // `stable_id` is an address the allocator can reuse once this connection is
         // freed, so a trace would join a later connection's packets to this one's
@@ -937,7 +937,7 @@ impl ConnectionRef {
                 .unwrap_or_else(|_| SocketAddr::from((std::net::Ipv6Addr::UNSPECIFIED, 0)));
             state
                 .inner
-                .set_moq_trace(moq_trace::global(), connection_id, local);
+                .set_quic_trace(quic_trace::global(), connection_id, local);
         }
         this
     }
@@ -1023,7 +1023,7 @@ pub(crate) struct State {
     send_buffer: Vec<u8>,
     /// We buffer a transmit when the underlying I/O would block, with the traced packets it
     /// carries, which end when a send finally accepts it
-    buffered_transmit: Option<(proto::Transmit, proto::TransmitTrace)>,
+    buffered_transmit: Option<(proto::Transmit, quic_trace::PendingSend)>,
 }
 
 impl State {
@@ -1052,7 +1052,7 @@ impl State {
                                 None => 1,
                                 Some(s) => t.size.div_ceil(s), // round up
                             };
-                            (t, self.inner.take_moq_trace_transmit())
+                            (t, self.inner.take_quic_trace_transmit())
                         }
                         None => break,
                     }
@@ -1071,10 +1071,20 @@ impl State {
             // that call returned.
             let (send_result, sent_ns) = self.socket.try_send_timed(
                 &udp_transmit(&t, &self.send_buffer[..len]),
-                self.inner.moq_trace_connection_id(),
+                self.inner.quic_trace_connection_id(),
             );
+            // A transmit holds traced packets only while tracing is on, so the instant is
+            // missing only when tracing turned off in between, and nothing reads the clock
+            // for a transmit without traced packets.
+            let sent_at = |trace: &quic_trace::PendingSend| {
+                (!trace.is_empty()).then(|| sent_ns.unwrap_or_else(quic_trace::now_ns))
+            };
             match send_result {
-                Ok(()) => trace.sent(sent_ns),
+                Ok(()) => {
+                    if let Some(at_ns) = sent_at(&trace) {
+                        trace.sent(at_ns);
+                    }
+                }
                 Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
                     // We thought the socket was writable, but it wasn't. Retry so that either
                     // another `poll_writable` call determines that the socket is indeed not
@@ -1087,7 +1097,9 @@ impl State {
                     // UDP is unreliable, so a failed send is logged and the transmit
                     // discarded, as `quinn-udp` did before reporting the system call's own
                     // result. Path MTU probes routinely fail with `EMSGSIZE`.
-                    trace.dropped(sent_ns);
+                    if let Some(at_ns) = sent_at(&trace) {
+                        trace.dropped(at_ns);
+                    }
                     tracing::debug!("send failed: {e}");
                 }
             }
