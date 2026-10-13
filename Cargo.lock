@@ -2065,7 +2065,7 @@ dependencies = [
 [[package]]
 name = "quic-trace"
 version = "0.1.0"
-source = "git+https://github.com/5062/moq-trace?branch=main#15c7f22f83d23cf22f0fbd9fab6199469e925217"
+source = "git+https://github.com/5062/moq-trace?branch=main#7cc24c4f94dbcf7d3ec97064795198a53d27f7fd"
 dependencies = [
  "trace-core",
 ]
@@ -2943,7 +2943,7 @@ checksum = "8df9b6e13f2d32c91b9bd719c00d1958837bc7dec474d94952798cc8e69eeec3"
 [[package]]
 name = "trace-core"
 version = "0.1.0"
-source = "git+https://github.com/5062/moq-trace?branch=main#15c7f22f83d23cf22f0fbd9fab6199469e925217"
+source = "git+https://github.com/5062/moq-trace?branch=main#7cc24c4f94dbcf7d3ec97064795198a53d27f7fd"
 
 [[package]]
 name = "tracing"
