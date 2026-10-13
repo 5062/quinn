@@ -2575,6 +2575,10 @@ impl Connection {
                 trace.set_number(*number);
             }
         }
+        let version_negotiation = matches!(
+            &decrypted,
+            Ok((packet, _)) if matches!(packet.header, Header::VersionNegotiate { .. })
+        );
         let result = match decrypted {
             _ if stateless_reset => {
                 debug!("got stateless reset");
@@ -2652,12 +2656,15 @@ impl Connection {
             }
         };
 
-        trace.finish(if result.is_ok() {
-            quic_trace::PacketOutcome::Success
-        } else if stateless_reset {
-            quic_trace::PacketOutcome::Dropped
-        } else {
-            quic_trace::PacketOutcome::Malformed
+        // A stateless reset or a version negotiation that ends the connection was processed in
+        // full, like the peer's CONNECTION_CLOSE, so it succeeds, and a version negotiation the
+        // connection ignores is dropped, as in Google QUICHE.
+        trace.finish(match &result {
+            Ok(()) if version_negotiation => quic_trace::PacketOutcome::Dropped,
+            Ok(()) | Err(ConnectionError::Reset) | Err(ConnectionError::VersionMismatch) => {
+                quic_trace::PacketOutcome::Success
+            }
+            Err(_) => quic_trace::PacketOutcome::Malformed,
         });
 
         // State transitions for error cases

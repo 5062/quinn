@@ -96,6 +96,8 @@ impl PacketBuilder {
             .with_number(exact_number)
             .with_space(super::quic_trace_packet_space(space_id)),
         );
+        // Encoding starts with the header, as in mvfst and Google QUICHE.
+        let encode_trace = trace.phase(quic_trace::PacketPhase::FrameEncode);
 
         let number = PacketNumber::new(exact_number, space.largest_acked_packet.unwrap_or(0));
         let header = match space_id {
@@ -165,8 +167,6 @@ impl PacketBuilder {
         );
         let max_size = buffer_capacity - tag_len;
         debug_assert!(max_size >= min_size);
-
-        let encode_trace = trace.phase(quic_trace::PacketPhase::FrameEncode);
 
         Some(Self {
             datagram_start,

@@ -140,10 +140,9 @@ pub struct StreamsState {
     /// The handle and connection identity of this connection's `quic_trace:*` events
     quic_trace: quic_trace::Handle,
     quic_trace_connection_id: u64,
-    /// The intervals in which a write found the connection's `MAX_DATA`, or its window of
-    /// unacknowledged data, used up
-    quic_trace_connection_flow_control_blocked: quic_trace::SendBlockedTrace,
-    quic_trace_send_buffer_blocked: quic_trace::SendBlockedTrace,
+    /// The connection-wide limit the intervals of the streams in `connection_blocked` last
+    /// recorded
+    quic_trace_write_blocked: Option<quic_trace::SendBlockedReason>,
 }
 
 impl StreamsState {
@@ -177,8 +176,7 @@ impl StreamsState {
             connection_blocked: Vec::new(),
             quic_trace: quic_trace::Handle::disabled(),
             quic_trace_connection_id: 0,
-            quic_trace_connection_flow_control_blocked: quic_trace::SendBlockedTrace::disabled(),
-            quic_trace_send_buffer_blocked: quic_trace::SendBlockedTrace::disabled(),
+            quic_trace_write_blocked: None,
             max_data: 0,
             receive_window: receive_window.into(),
             local_max_data: receive_window.into(),
@@ -796,6 +794,7 @@ impl StreamsState {
                     // it needs to be in the connection blocked list.
                     ss.connection_blocked = true;
                     self.connection_blocked.push(id);
+                    self.start_quic_trace_connection_blocked(id);
                 }
             }
         } else if id.initiator() == self.side && self.is_local_unopened(id) {
@@ -830,28 +829,61 @@ impl StreamsState {
         );
     }
 
-    /// Start or end the intervals in which writes find a connection-wide limit used up
+    /// Start the interval in which a write to `id` waits in `connection_blocked` for a
+    /// connection-wide limit to relax
+    pub(super) fn start_quic_trace_connection_blocked(&mut self, id: StreamId) {
+        let reason = self.quic_trace_write_limit();
+        self.set_quic_trace_connection_blocked(id, reason);
+    }
+
+    /// Follow a change of the connection-wide limit in the intervals of every stream waiting in
+    /// `connection_blocked`
     ///
-    /// A limit blocks writes while a stream waits in `connection_blocked` for it to relax, so
-    /// each interval ends once its limit relaxes or no stream waits any more.
+    /// Each stream records its own interval, as Google QUICHE and mvfst do, and the interval ends
+    /// once no connection-wide limit holds, or changes its reason when the other one does.
     pub(super) fn update_quic_trace_write_blocked(&mut self) {
-        let waiting = !self.connection_blocked.is_empty();
-        update_quic_trace_send_blocked(
-            &self.quic_trace,
-            self.quic_trace_connection_id,
-            &mut self.quic_trace_connection_flow_control_blocked,
-            quic_trace::SendBlockedReason::ConnectionFlowControl,
-            None,
-            waiting && self.max_data <= self.data_sent,
-        );
-        update_quic_trace_send_blocked(
-            &self.quic_trace,
-            self.quic_trace_connection_id,
-            &mut self.quic_trace_send_buffer_blocked,
-            quic_trace::SendBlockedReason::SendBuffer,
-            None,
-            waiting && self.send_window <= self.unacked_data,
-        );
+        let reason = self.quic_trace_write_limit();
+        if reason == self.quic_trace_write_blocked {
+            return;
+        }
+        self.quic_trace_write_blocked = reason;
+        for i in 0..self.connection_blocked.len() {
+            self.set_quic_trace_connection_blocked(self.connection_blocked[i], reason);
+        }
+    }
+
+    /// The connection-wide limit that blocks writes now, if any
+    fn quic_trace_write_limit(&self) -> Option<quic_trace::SendBlockedReason> {
+        if self.max_data <= self.data_sent {
+            Some(quic_trace::SendBlockedReason::ConnectionFlowControl)
+        } else if self.send_window <= self.unacked_data {
+            Some(quic_trace::SendBlockedReason::SendBuffer)
+        } else {
+            None
+        }
+    }
+
+    /// Record that a write to `id` is blocked by `reason`, or no longer blocked
+    fn set_quic_trace_connection_blocked(
+        &mut self,
+        id: StreamId,
+        reason: Option<quic_trace::SendBlockedReason>,
+    ) {
+        let Some(stream) = self.send.get_mut(&id).and_then(|s| s.as_mut()) else {
+            return;
+        };
+        // A stream that can no longer be written to waits for nothing.
+        let reason = reason.filter(|_| stream.is_writable());
+        let interval = &mut stream.quic_trace_connection_blocked;
+        if interval.reason() == reason {
+            return;
+        }
+        mem::replace(interval, quic_trace::SendBlockedTrace::disabled()).finish();
+        if let Some(reason) = reason {
+            *interval =
+                self.quic_trace
+                    .send_blocked(self.quic_trace_connection_id, reason, Some(id.0));
+        }
     }
 
     /// Returns the maximum amount of data this is allowed to be written on the connection
@@ -877,6 +909,11 @@ impl StreamsState {
 
                 debug_assert!(stream.connection_blocked);
                 stream.connection_blocked = false;
+                mem::replace(
+                    &mut stream.quic_trace_connection_blocked,
+                    quic_trace::SendBlockedTrace::disabled(),
+                )
+                .finish();
 
                 // If it's no longer sensible to write to a stream (even to detect an error) then don't
                 // report it.
@@ -884,7 +921,6 @@ impl StreamsState {
                     return Some(StreamEvent::Writable { id });
                 }
             }
-            self.update_quic_trace_write_blocked();
         }
 
         self.events.pop_front()

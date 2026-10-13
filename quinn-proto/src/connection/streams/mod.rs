@@ -261,7 +261,7 @@ impl<'a> SendStream<'a> {
                 stream.connection_blocked = true;
                 self.state.connection_blocked.push(self.id);
             }
-            self.state.update_quic_trace_write_blocked();
+            self.state.start_quic_trace_connection_blocked(self.id);
             return Err(WriteError::Blocked);
         }
 
@@ -339,11 +339,12 @@ impl<'a> SendStream<'a> {
         self.state.unacked_data -= stream.pending.unacked();
         stream.reset();
         // A reset stream no longer waits for credit, and its unsent data leaves the send window.
-        std::mem::replace(
+        for interval in [
             &mut stream.quic_trace_flow_control_blocked,
-            quic_trace::SendBlockedTrace::disabled(),
-        )
-        .finish();
+            &mut stream.quic_trace_connection_blocked,
+        ] {
+            std::mem::replace(interval, quic_trace::SendBlockedTrace::disabled()).finish();
+        }
         self.state.update_quic_trace_write_blocked();
         self.pending.reset_stream.push((self.id, error_code));
 
