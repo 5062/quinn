@@ -75,12 +75,7 @@ pub trait AsyncUdpSocket: Send + Sync + Debug + 'static {
     ) -> (io::Result<()>, Option<u64>) {
         let _ = connection_id;
         let result = self.try_send(transmit);
-        (
-            result,
-            quic_trace::global()
-                .is_enabled()
-                .then(quic_trace::now_ns),
-        )
+        (result, quic_trace::global().now_ns_if_enabled())
     }
 
     /// Receive UDP datagrams, or register to be woken if receiving may succeed in the future

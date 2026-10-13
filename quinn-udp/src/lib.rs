@@ -124,15 +124,6 @@ pub struct RecvMeta {
     pub read_ns: Option<u64>,
 }
 
-/// The `quic-trace` clock, when any transport event would be recorded.
-///
-/// A platform that does not trace its system calls still reports when they returned, read
-/// here right after, so the packets they carried start or end at that instant.
-#[allow(dead_code)] // unused where the platform module traces its own system calls
-fn traced_now_ns() -> Option<u64> {
-    quic_trace::global().is_enabled().then(quic_trace::now_ns)
-}
-
 impl Default for RecvMeta {
     /// Constructs a value with arbitrary fields, intended to be overwritten
     fn default() -> Self {

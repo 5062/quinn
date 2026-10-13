@@ -152,7 +152,7 @@ impl Endpoint {
         data: BytesMut,
         buf: &mut Vec<u8>,
     ) -> Option<DatagramEvent> {
-        let read_ns = quic_trace::global().is_enabled().then(quic_trace::now_ns);
+        let read_ns = quic_trace::global().now_ns_if_enabled();
         self.handle_at(now, remote, local_ip, ecn, data, buf, read_ns)
     }
 
@@ -184,15 +184,14 @@ impl Endpoint {
             self.config.grease_quic_bit,
         ) {
             Ok((first_decode, remaining)) => {
-                let quic_trace =
-                    read_ns
-                        .zip(packet_start_ns)
-                        .map(|(read_ns, start_ns)| crate::shared::DatagramTrace {
-                            read_ns,
-                            start_ns,
-                            header_parse_end_ns: quic_trace::now_ns(),
-                            enqueued_ns: None,
-                        });
+                let quic_trace = read_ns.zip(packet_start_ns).map(|(read_ns, start_ns)| {
+                    crate::shared::DatagramTrace {
+                        read_ns,
+                        start_ns,
+                        header_parse_end_ns: quic_trace::now_ns(),
+                        enqueued_ns: None,
+                    }
+                });
                 DatagramConnectionEvent {
                     now,
                     remote,

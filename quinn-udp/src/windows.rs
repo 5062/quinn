@@ -181,7 +181,7 @@ impl UdpSocketState {
         _connection_id: Option<u64>,
     ) -> (io::Result<()>, Option<u64>) {
         let result = send(socket, transmit);
-        (result, crate::traced_now_ns())
+        (result, quic_trace::global().now_ns_if_enabled())
     }
 
     pub fn recv(
@@ -283,7 +283,7 @@ impl UdpSocketState {
             addr: addr.unwrap(),
             ecn: EcnCodepoint::from_bits(ecn_bits as u8),
             dst_ip,
-            read_ns: crate::traced_now_ns(),
+            read_ns: quic_trace::global().now_ns_if_enabled(),
         };
         Ok(1)
     }

@@ -46,10 +46,6 @@ pub(super) fn quic_trace_packet_space(space: SpaceId) -> quic_trace::PacketSpace
     }
 }
 
-fn quic_trace_finish(trace: &mut quic_trace::PacketTrace, outcome: quic_trace::PacketOutcome) {
-    std::mem::replace(trace, quic_trace::PacketTrace::disabled()).finish(outcome);
-}
-
 mod ack_frequency;
 use ack_frequency::AckFrequencyState;
 
@@ -396,7 +392,12 @@ impl Connection {
     ///
     /// When the socket is bound to the wildcard address, `local` may be the wildcard unless the
     /// connection learned the address its peer reached it on.
-    pub fn set_quic_trace(&mut self, handle: quic_trace::Handle, connection_id: u64, local: SocketAddr) {
+    pub fn set_quic_trace(
+        &mut self,
+        handle: quic_trace::Handle,
+        connection_id: u64,
+        local: SocketAddr,
+    ) {
         self.quic_trace = handle;
         self.quic_trace_connection_id = Some(connection_id);
         let local = match self.local_ip {
@@ -1186,10 +1187,12 @@ impl Connection {
 
                 let trace = match (self.quic_trace_connection_id, &timing, handling_ns) {
                     (Some(connection_id), Some(timing), Some(handling_ns)) => {
-                        let mut context =
-                            quic_trace::PacketContext::new(quic_trace::Direction::Rx, connection_id)
-                                .with_byte_len(first_decode.len())
-                                .with_start_ns(timing.read_ns);
+                        let mut context = quic_trace::PacketContext::new(
+                            quic_trace::Direction::Rx,
+                            connection_id,
+                        )
+                        .with_byte_len(first_decode.len())
+                        .with_start_ns(timing.read_ns);
                         if let Some(space) = first_decode.space() {
                             context = context.with_space(quic_trace_packet_space(space));
                         }
@@ -1198,19 +1201,32 @@ impl Connection {
                         // available. Emit them together now while preserving their original
                         // timestamps. The packet starts when the receive system call returned,
                         // and waits in `read_queue` until the endpoint processes its datagram.
-                        trace
-                            .phase_at(quic_trace::PacketPhase::ReadQueue, timing.read_ns)
-                            .finish_at(quic_trace::PacketOutcome::Success, timing.start_ns);
-                        trace
-                            .phase_at(quic_trace::PacketPhase::HeaderParse, timing.start_ns)
-                            .finish_at(quic_trace::PacketOutcome::Success, timing.header_parse_end_ns);
+                        let success = quic_trace::PacketOutcome::Success;
+                        trace.record_phase(
+                            quic_trace::PacketPhase::ReadQueue,
+                            timing.read_ns,
+                            timing.start_ns,
+                            success,
+                        );
+                        trace.record_phase(
+                            quic_trace::PacketPhase::HeaderParse,
+                            timing.start_ns,
+                            timing.header_parse_end_ns,
+                            success,
+                        );
                         if let Some(enqueued_ns) = timing.enqueued_ns {
-                            trace
-                                .phase_at(quic_trace::PacketPhase::Routing, timing.header_parse_end_ns)
-                                .finish_at(quic_trace::PacketOutcome::Success, enqueued_ns);
-                            trace
-                                .phase_at(quic_trace::PacketPhase::Scheduling, enqueued_ns)
-                                .finish_at(quic_trace::PacketOutcome::Success, handling_ns);
+                            trace.record_phase(
+                                quic_trace::PacketPhase::Routing,
+                                timing.header_parse_end_ns,
+                                enqueued_ns,
+                                success,
+                            );
+                            trace.record_phase(
+                                quic_trace::PacketPhase::Scheduling,
+                                enqueued_ns,
+                                handling_ns,
+                                success,
+                            );
                         }
                         trace
                     }
@@ -1225,7 +1241,13 @@ impl Connection {
 
                 if let Some(data) = remaining {
                     self.stats.udp_rx.bytes += data.len() as u64;
-                    self.handle_coalesced(now, remote, ecn, data, timing.map(|timing| timing.read_ns));
+                    self.handle_coalesced(
+                        now,
+                        remote,
+                        ecn,
+                        data,
+                        timing.map(|timing| timing.read_ns),
+                    );
                 }
 
                 self.config.qlog_sink.emit_recovery_metrics(
@@ -2356,7 +2378,7 @@ impl Connection {
                 Err(e) => {
                     {
                         parse_trace.finish(quic_trace::PacketOutcome::Malformed);
-                        quic_trace_finish(&mut trace, quic_trace::PacketOutcome::Malformed);
+                        trace.finish(quic_trace::PacketOutcome::Malformed);
                     }
                     trace!("malformed header: {}", e);
                     return;
@@ -2371,7 +2393,7 @@ impl Connection {
         remote: SocketAddr,
         ecn: Option<EcnCodepoint>,
         partial_decode: PartialDecode,
-        mut trace: quic_trace::PacketTrace,
+        trace: quic_trace::PacketTrace,
     ) {
         let unprotect_trace = trace.phase(quic_trace::PacketPhase::HeaderUnprotect);
         let decoded = packet_crypto::unprotect_header(
@@ -2394,7 +2416,7 @@ impl Connection {
                 trace,
             );
         } else {
-            quic_trace_finish(&mut trace, quic_trace::PacketOutcome::Dropped);
+            trace.finish(quic_trace::PacketOutcome::Dropped);
         }
     }
 
@@ -2420,7 +2442,7 @@ impl Connection {
 
         if self.is_handshaking() && remote != self.path.remote {
             debug!("discarding packet with unexpected remote during handshake");
-            quic_trace_finish(&mut trace, quic_trace::PacketOutcome::Dropped);
+            trace.finish(quic_trace::PacketOutcome::Dropped);
             return;
         }
 
@@ -2466,7 +2488,7 @@ impl Connection {
                 if self.authentication_failures > integrity_limit {
                     Err(TransportError::AEAD_LIMIT_REACHED("integrity limit violated").into())
                 } else {
-                    quic_trace_finish(&mut trace, quic_trace::PacketOutcome::AuthenticationFailed);
+                    trace.finish(quic_trace::PacketOutcome::AuthenticationFailed);
                     return;
                 }
             }
@@ -2480,12 +2502,12 @@ impl Connection {
                 let is_duplicate = |n| self.spaces[packet.header.space()].dedup.insert(n);
                 if number.is_some_and(is_duplicate) {
                     debug!("discarding possible duplicate packet");
-                    quic_trace_finish(&mut trace, quic_trace::PacketOutcome::Dropped);
+                    trace.finish(quic_trace::PacketOutcome::Dropped);
                     return;
                 } else if self.state.is_handshake() && packet.header.is_short() {
                     // TODO: SHOULD buffer these to improve reordering tolerance.
                     trace!("dropping short packet during handshake");
-                    quic_trace_finish(&mut trace, quic_trace::PacketOutcome::Dropped);
+                    trace.finish(quic_trace::PacketOutcome::Dropped);
                     return;
                 } else {
                     if let Header::Initial(InitialHeader { ref token, .. }) = packet.header {
@@ -2495,7 +2517,7 @@ impl Connection {
                                 // packets can be spoofed, so we discard rather than killing the
                                 // connection.
                                 warn!("discarding Initial with invalid retry token");
-                                quic_trace_finish(&mut trace, quic_trace::PacketOutcome::Dropped);
+                                trace.finish(quic_trace::PacketOutcome::Dropped);
                                 return;
                             }
                         }
@@ -2521,16 +2543,13 @@ impl Connection {
             }
         };
 
-        quic_trace_finish(
-            &mut trace,
-            if result.is_ok() {
-                quic_trace::PacketOutcome::Success
-            } else if stateless_reset {
-                quic_trace::PacketOutcome::Dropped
-            } else {
-                quic_trace::PacketOutcome::Malformed
-            },
-        );
+        trace.finish(if result.is_ok() {
+            quic_trace::PacketOutcome::Success
+        } else if stateless_reset {
+            quic_trace::PacketOutcome::Dropped
+        } else {
+            quic_trace::PacketOutcome::Malformed
+        });
 
         // State transitions for error cases
         if let Err(conn_err) = result {
