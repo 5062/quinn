@@ -1,4 +1,4 @@
-use std::{fmt, net::SocketAddr};
+use std::{fmt, net::SocketAddr, ops::Range};
 
 use bytes::{Buf, BufMut, BytesMut};
 
@@ -28,14 +28,29 @@ pub(crate) struct DatagramConnectionEvent {
     pub(crate) quic_trace: Option<DatagramTrace>,
 }
 
+/// The `quic-trace` timing of a datagram, measured before its connection handles it
 #[derive(Debug)]
 pub(crate) struct DatagramTrace {
-    /// When the receive system call that returned the datagram completed.
+    /// When the receive system call that returned the datagram completed
     pub(crate) read_ns: u64,
-    /// When the endpoint began processing the datagram.
+    /// When the endpoint began processing the datagram
     pub(crate) start_ns: u64,
+    /// When the endpoint finished parsing the first packet's header
     pub(crate) header_parse_end_ns: u64,
+    /// When the endpoint handed the datagram to its connection's task
     pub(crate) enqueued_ns: Option<u64>,
+}
+
+/// The `quic-trace` timing of a connection's first packet, which the endpoint unprotects and
+/// the application's accept decrypts before the connection exists
+#[derive(Debug)]
+pub(crate) struct FirstPacketTrace {
+    /// The timing of the datagram that carried the packet
+    pub(crate) datagram: DatagramTrace,
+    /// When the endpoint removed the packet's header protection
+    pub(crate) unprotect_ns: Range<u64>,
+    /// When the accept decrypted the packet's payload, once it has
+    pub(crate) decrypt_ns: Option<Range<u64>>,
 }
 
 impl ConnectionEvent {

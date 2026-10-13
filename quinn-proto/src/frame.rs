@@ -469,6 +469,8 @@ pub(crate) struct StreamMeta {
     pub(crate) id: StreamId,
     pub(crate) offsets: Range<u64>,
     pub(crate) fin: bool,
+    /// Whether the frame resends bytes an earlier packet carried, which `quic_trace` records
+    pub(crate) retransmission: bool,
 }
 
 // This manual implementation exists because `Default` is not implemented for `StreamId`
@@ -478,6 +480,7 @@ impl Default for StreamMeta {
             id: StreamId(0),
             offsets: 0..0,
             fin: false,
+            retransmission: false,
         }
     }
 }

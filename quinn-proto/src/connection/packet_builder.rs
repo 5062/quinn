@@ -88,15 +88,13 @@ impl PacketBuilder {
 
         let span = trace_span!("send", space = ?space_id, pn = exact_number).entered();
 
-        let trace = conn.quic_trace_connection_id.map_or_else(
-            quic_trace::PacketTrace::disabled,
-            |connection_id| {
-                conn.quic_trace.packet(
-                    quic_trace::PacketContext::new(quic_trace::Direction::Tx, connection_id)
-                        .with_number(exact_number)
-                        .with_space(super::quic_trace_packet_space(space_id)),
-                )
-            },
+        let trace = conn.quic_trace.packet(
+            quic_trace::PacketContext::new(
+                quic_trace::Direction::Tx,
+                conn.quic_trace_connection_id,
+            )
+            .with_number(exact_number)
+            .with_space(super::quic_trace_packet_space(space_id)),
         );
 
         let number = PacketNumber::new(exact_number, space.largest_acked_packet.unwrap_or(0));
@@ -284,9 +282,19 @@ impl PacketBuilder {
         let encode_start = self.partial_encode.start;
         let len = buffer.len() - encode_start;
         let mut trace = self.trace;
-        {
-            self.encode_trace.finish(quic_trace::PacketOutcome::Success);
-            trace.set_byte_len(len);
+        self.encode_trace.finish(quic_trace::PacketOutcome::Success);
+        trace.set_byte_len(len);
+        // A STREAM frame is recorded once its packet's frames are encoded, before encryption,
+        // as mvfst records it. A frame without bytes, such as a bare FIN, covers no range.
+        for frame in sent.iter().flat_map(|sent| &sent.stream_frames) {
+            if frame.offsets.is_empty() {
+                continue;
+            }
+            trace.stream_frame(
+                quic_trace::StreamFrame::new(frame.id.0, frame.offsets.start, frame.offsets.end)
+                    .with_retransmission(frame.retransmission),
+                quic_trace::PacketOutcome::Success,
+            );
         }
         let encrypt_trace = trace.phase(quic_trace::PacketPhase::PacketEncrypt);
         let packet_buf = &mut buffer[encode_start..];
@@ -296,24 +304,10 @@ impl PacketBuilder {
             Some((self.exact_number, packet_crypto)),
         );
 
-        {
-            encrypt_trace.finish(quic_trace::PacketOutcome::Success);
-            if let Some(sent) = sent {
-                for frame in &sent.stream_frames {
-                    trace.stream_frame(
-                        quic_trace::StreamFrame::new(
-                            frame.id.0,
-                            frame.offsets.start,
-                            frame.offsets.end,
-                        ),
-                        quic_trace::PacketOutcome::Success,
-                    );
-                }
-            }
-            // The packet's lifecycle ends when the send carrying it returns, so it waits in
-            // `send_queue` with the rest of the transmit until the caller learns the outcome.
-            conn.quic_trace_transmit.push(trace);
-        }
+        encrypt_trace.finish(quic_trace::PacketOutcome::Success);
+        // The packet's lifecycle ends when the send carrying it returns, so it waits in
+        // `send_queue` with the rest of the transmit until the caller learns the outcome.
+        conn.quic_trace_transmit.push(trace);
         conn.config.qlog_sink.emit_packet_sent(
             self.exact_number,
             len,

@@ -15,6 +15,9 @@ pub(super) struct Send {
     pub(super) connection_blocked: bool,
     /// The reason the peer wants us to stop, if `STOP_SENDING` was received
     pub(super) stop_reason: Option<VarInt>,
+    /// The interval in which a write found this stream's `MAX_STREAM_DATA` used up, which ends
+    /// when the peer raises it or the stream goes away
+    pub(super) quic_trace_flow_control_blocked: quic_trace::SendBlockedTrace,
 }
 
 impl Send {
@@ -27,6 +30,7 @@ impl Send {
             fin_pending: false,
             connection_blocked: false,
             stop_reason: None,
+            quic_trace_flow_control_blocked: quic_trace::SendBlockedTrace::disabled(),
         })
     }
 

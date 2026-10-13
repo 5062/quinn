@@ -137,6 +137,13 @@ pub struct StreamsState {
 
     /// The shrink to be applied to local_max_data when receive_window is shrunk
     receive_window_shrink_debt: u64,
+    /// The handle and connection identity of this connection's `quic_trace:*` events
+    quic_trace: quic_trace::Handle,
+    quic_trace_connection_id: u64,
+    /// The intervals in which a write found the connection's `MAX_DATA`, or its window of
+    /// unacknowledged data, used up
+    quic_trace_connection_flow_control_blocked: quic_trace::SendBlockedTrace,
+    quic_trace_send_buffer_blocked: quic_trace::SendBlockedTrace,
 }
 
 impl StreamsState {
@@ -168,6 +175,10 @@ impl StreamsState {
             pending: PendingStreamsQueue::new(),
             events: VecDeque::new(),
             connection_blocked: Vec::new(),
+            quic_trace: quic_trace::Handle::disabled(),
+            quic_trace_connection_id: 0,
+            quic_trace_connection_flow_control_blocked: quic_trace::SendBlockedTrace::disabled(),
+            quic_trace_send_buffer_blocked: quic_trace::SendBlockedTrace::disabled(),
             max_data: 0,
             receive_window: receive_window.into(),
             local_max_data: receive_window.into(),
@@ -594,7 +605,9 @@ impl StreamsState {
             // Now that we know the `StreamId`, we can better account for how many bytes
             // are required to encode it.
             let max_buf_size = max_buf_size - buf.len() - 1 - VarInt::size(id.into());
+            let unsent = stream.pending.unsent();
             let (offsets, encode_length) = stream.pending.poll_transmit(max_buf_size);
+            let retransmission = offsets.start < unsent;
             let fin = offsets.end == stream.pending.offset()
                 && matches!(stream.state, SendState::DataSent { .. });
             if fin {
@@ -613,7 +626,12 @@ impl StreamsState {
                 }
             }
 
-            let meta = frame::StreamMeta { id, offsets, fin };
+            let meta = frame::StreamMeta {
+                id,
+                offsets,
+                fin,
+                retransmission,
+            };
             trace!(id = %meta.id, off = meta.offsets.start, len = meta.offsets.end - meta.offsets.start, fin = meta.fin, "STREAM");
             meta.encode(encode_length, buf);
 
@@ -675,10 +693,12 @@ impl StreamsState {
         self.unacked_data -= frame.offsets.end - frame.offsets.start;
         if !stream.ack(frame) {
             // The stream is unfinished or may still need retransmits
+            self.update_quic_trace_write_blocked();
             return;
         }
 
         entry.remove_entry();
+        self.update_quic_trace_write_blocked();
         self.stream_freed(id, StreamHalf::Send);
         self.events.push_back(StreamEvent::Finished { id });
     }
@@ -740,6 +760,7 @@ impl StreamsState {
     /// Handle increase to connection-level flow control limit
     pub(crate) fn received_max_data(&mut self, n: VarInt) {
         self.max_data = self.max_data.max(n.into());
+        self.update_quic_trace_write_blocked();
     }
 
     pub(crate) fn received_max_stream_data(
@@ -762,6 +783,11 @@ impl StreamsState {
             .map(get_or_insert_send(max_send_data))
         {
             if ss.increase_max_data(offset) {
+                mem::replace(
+                    &mut ss.quic_trace_flow_control_blocked,
+                    quic_trace::SendBlockedTrace::disabled(),
+                )
+                .finish();
                 if write_limit > 0 {
                     self.events.push_back(StreamEvent::Writable { id });
                 } else if !ss.connection_blocked {
@@ -781,6 +807,51 @@ impl StreamsState {
 
         self.on_stream_frame(false, id);
         Ok(())
+    }
+
+    /// Install the handle and connection identity of this connection's `quic_trace:*` events
+    pub(crate) fn set_quic_trace(&mut self, handle: quic_trace::Handle, connection_id: u64) {
+        self.quic_trace = handle;
+        self.quic_trace_connection_id = connection_id;
+    }
+
+    /// Start the interval in which a write found `id`'s `MAX_STREAM_DATA` used up
+    pub(super) fn start_quic_trace_stream_blocked(&mut self, id: StreamId) {
+        let Some(stream) = self.send.get_mut(&id).and_then(|s| s.as_mut()) else {
+            return;
+        };
+        update_quic_trace_send_blocked(
+            &self.quic_trace,
+            self.quic_trace_connection_id,
+            &mut stream.quic_trace_flow_control_blocked,
+            quic_trace::SendBlockedReason::StreamFlowControl,
+            Some(id.0),
+            true,
+        );
+    }
+
+    /// Start or end the intervals in which writes find a connection-wide limit used up
+    ///
+    /// A limit blocks writes while a stream waits in `connection_blocked` for it to relax, so
+    /// each interval ends once its limit relaxes or no stream waits any more.
+    pub(super) fn update_quic_trace_write_blocked(&mut self) {
+        let waiting = !self.connection_blocked.is_empty();
+        update_quic_trace_send_blocked(
+            &self.quic_trace,
+            self.quic_trace_connection_id,
+            &mut self.quic_trace_connection_flow_control_blocked,
+            quic_trace::SendBlockedReason::ConnectionFlowControl,
+            None,
+            waiting && self.max_data <= self.data_sent,
+        );
+        update_quic_trace_send_blocked(
+            &self.quic_trace,
+            self.quic_trace_connection_id,
+            &mut self.quic_trace_send_buffer_blocked,
+            quic_trace::SendBlockedReason::SendBuffer,
+            None,
+            waiting && self.send_window <= self.unacked_data,
+        );
     }
 
     /// Returns the maximum amount of data this is allowed to be written on the connection
@@ -813,6 +884,7 @@ impl StreamsState {
                     return Some(StreamEvent::Writable { id });
                 }
             }
+            self.update_quic_trace_write_blocked();
         }
 
         self.events.pop_front()
@@ -877,6 +949,7 @@ impl StreamsState {
 
     pub(crate) fn set_send_window(&mut self, send_window: u64) {
         self.send_window = send_window;
+        self.update_quic_trace_write_blocked();
     }
 
     /// Set the receive_window and returns whether the receive_window has been
@@ -994,6 +1067,25 @@ pub(super) fn get_or_insert_recv(
         opt.get_or_insert_with(|| StreamRecv::Open(Recv::new(initial_max_data)))
             .as_open_recv_mut()
             .unwrap()
+    }
+}
+
+/// Start an interval in `interval` while `blocked` holds, and end it once it stops holding
+///
+/// mvfst keeps its intervals the same way, so both stacks open one interval per condition and
+/// reason rather than one per write.
+pub(crate) fn update_quic_trace_send_blocked(
+    handle: &quic_trace::Handle,
+    connection_id: u64,
+    interval: &mut quic_trace::SendBlockedTrace,
+    reason: quic_trace::SendBlockedReason,
+    stream_id: Option<u64>,
+    blocked: bool,
+) {
+    if !blocked {
+        mem::replace(interval, quic_trace::SendBlockedTrace::disabled()).finish();
+    } else if interval.reason().is_none() {
+        *interval = handle.send_blocked(connection_id, reason, stream_id);
     }
 }
 
@@ -2019,6 +2111,7 @@ mod tests {
             id: stream_id,
             offsets: 0..larger_send_window,
             fin: false,
+            retransmission: false,
         });
 
         assert_eq!(
@@ -2091,6 +2184,7 @@ mod tests {
             id: stream_id,
             offsets: 0..smaller_send_window,
             fin: false,
+            retransmission: false,
         });
 
         assert_eq!(stream.write(&data), Err(WriteError::Blocked));
@@ -2100,6 +2194,7 @@ mod tests {
             id: stream_id,
             offsets: smaller_send_window..initial_send_window,
             fin: false,
+            retransmission: false,
         });
 
         // This should generate a `Writable` event

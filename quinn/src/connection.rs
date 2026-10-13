@@ -897,6 +897,7 @@ impl ConnectionRef {
         socket: Arc<dyn AsyncUdpSocket>,
         runtime: Arc<dyn Runtime>,
     ) -> Self {
+        let trace_connection_id = conn.quic_trace_connection_id();
         let this = Self(Arc::new(ConnectionInner {
             state: Mutex::new(State {
                 inner: conn,
@@ -920,13 +921,9 @@ impl ConnectionRef {
                 buffered_transmit: None,
             }),
             shared: Shared::default(),
-            trace_connection_id: quic_trace::next_connection_id(),
+            trace_connection_id,
         }));
-        // `stable_id` is an address the allocator can reuse once this connection is
-        // freed, so a trace would join a later connection's packets to this one's
-        // objects. The toolkit counter never reuses a value.
         {
-            let connection_id = this.trace_connection_id;
             let mut state = this.state.lock("ConnectionRef::new");
             // The path event names the socket this connection sends from, so analysis can
             // join its packets to a packet capture. An unreadable address leaves only the
@@ -935,9 +932,7 @@ impl ConnectionRef {
                 .socket
                 .local_addr()
                 .unwrap_or_else(|_| SocketAddr::from((std::net::Ipv6Addr::UNSPECIFIED, 0)));
-            state
-                .inner
-                .set_quic_trace(quic_trace::global(), connection_id, local);
+            state.inner.set_quic_trace_local(local);
         }
         this
     }
@@ -983,7 +978,8 @@ impl std::ops::Deref for ConnectionRef {
 pub(crate) struct ConnectionInner {
     pub(crate) state: Mutex<State>,
     pub(crate) shared: Shared,
-    /// Transport trace identity, allocated once and never reused in the process.
+    /// Transport trace identity, which `quinn-proto` allocates with the connection and never
+    /// reuses in the process, unlike `stable_id`, an address the allocator can reuse
     trace_connection_id: u64,
 }
 
@@ -1071,7 +1067,7 @@ impl State {
             // that call returned.
             let (send_result, sent_ns) = self.socket.try_send_timed(
                 &udp_transmit(&t, &self.send_buffer[..len]),
-                self.inner.quic_trace_connection_id(),
+                Some(self.inner.quic_trace_connection_id()),
             );
             // A transmit holds traced packets only while tracing is on, so the instant is
             // missing only when tracing turned off in between, and nothing reads the clock

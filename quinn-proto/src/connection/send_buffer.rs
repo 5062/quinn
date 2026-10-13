@@ -172,6 +172,12 @@ impl SendBuffer {
         self.offset
     }
 
+    /// First stream offset never transmitted, so data below it that is sent again is a
+    /// retransmission
+    pub(super) fn unsent(&self) -> u64 {
+        self.unsent
+    }
+
     /// Whether all sent data has been acknowledged
     pub(super) fn is_fully_acked(&self) -> bool {
         self.unacked_len == 0

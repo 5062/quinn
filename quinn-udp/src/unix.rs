@@ -610,7 +610,8 @@ fn recv(io: SockRef<'_>, bufs: &mut [IoSliceMut<'_>], meta: &mut [RecvMeta]) -> 
         let read_ns = syscall.returned();
 
         if hdr.msg_flags & libc::MSG_TRUNC != 0 {
-            syscall.failed(&io::Error::from(io::ErrorKind::InvalidData));
+            // The call itself succeeded; quinn discards the truncated datagram and reads again.
+            syscall.succeeded(quic_trace::SocketStats::buffer(n.max(0) as usize, None));
             continue;
         }
 
