@@ -256,7 +256,7 @@ impl PacketBuilder {
         conn: &mut Connection,
         now: Instant,
         buffer: &mut Vec<u8>,
-        _sent: Option<&SentFrames>,
+        sent: Option<&SentFrames>,
     ) -> (usize, bool) {
         let pad = buffer.len() < self.min_size;
         if pad {
@@ -298,7 +298,7 @@ impl PacketBuilder {
 
         {
             encrypt_trace.finish(quic_trace::PacketOutcome::Success);
-            if let Some(sent) = _sent {
+            if let Some(sent) = sent {
                 for frame in &sent.stream_frames {
                     trace.stream_frame(
                         quic_trace::StreamFrame::new(

@@ -2092,7 +2092,6 @@ dependencies = [
  "rcgen",
  "rustc-hash",
  "rustls",
- "serde_json",
  "smol",
  "socket2 0.6.3",
  "thiserror 2.0.18",

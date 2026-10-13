@@ -591,8 +591,8 @@ impl Connection {
     /// Unlike [`Self::stable_id`], it is never reused within the process, so an
     /// application that tags its own trace events with it pairs them with this
     /// connection's packets even after other connections come and go.
-    pub fn trace_connection_id(&self) -> Option<u64> {
-        Some(self.0.trace_connection_id)
+    pub fn trace_connection_id(&self) -> u64 {
+        self.0.trace_connection_id
     }
 
     /// Update traffic keys spontaneously
