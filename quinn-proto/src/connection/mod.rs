@@ -37,7 +37,7 @@ use crate::{
     transport_parameters::TransportParameters,
 };
 
-/// Map a packet number space to its `quic-trace` value
+/// Map a packet number space to its `quic_trace` value
 pub(super) fn quic_trace_packet_space(space: SpaceId) -> quic_trace::PacketSpace {
     match space {
         SpaceId::Initial => quic_trace::PacketSpace::Initial,
@@ -262,7 +262,7 @@ pub struct Connection {
     quic_trace_pacing_blocked: quic_trace::SendBlockedTrace,
     /// The traced packets built into the transmit being assembled, which wait in their
     /// `send_queue` phase until the send that carries the transmit returns
-    quic_trace_transmit: quic_trace::PendingSend,
+    quic_trace_pending: quic_trace::PendingSend,
 }
 
 impl Connection {
@@ -386,7 +386,7 @@ impl Connection {
             quic_trace_amplification_blocked: quic_trace::SendBlockedTrace::disabled(),
             quic_trace_congestion_window_blocked: quic_trace::SendBlockedTrace::disabled(),
             quic_trace_pacing_blocked: quic_trace::SendBlockedTrace::disabled(),
-            quic_trace_transmit: quic_trace::PendingSend::new(),
+            quic_trace_pending: quic_trace::PendingSend::new(),
         };
         this.streams
             .set_quic_trace(this.quic_trace.clone(), this.quic_trace_connection_id);
@@ -411,7 +411,7 @@ impl Connection {
             None => local,
         };
         self.quic_trace_local = Some(local);
-        self.record_quic_trace_path();
+        self.quic_trace_record_path();
     }
 
     /// The identifier this connection's `quic_trace:*` events carry
@@ -424,12 +424,12 @@ impl Connection {
     /// Take the traced packets of the transmit the last `poll_transmit` returned
     ///
     /// The caller ends them when the send carrying the transmit returns.
-    pub fn take_quic_trace_transmit(&mut self) -> quic_trace::PendingSend {
-        mem::take(&mut self.quic_trace_transmit)
+    pub fn take_quic_trace_pending(&mut self) -> quic_trace::PendingSend {
+        mem::take(&mut self.quic_trace_pending)
     }
 
     /// Record the path the connection now sends on.
-    fn record_quic_trace_path(&self) {
+    fn quic_trace_record_path(&self) {
         if let Some(local) = self.quic_trace_local {
             self.quic_trace.connection_path(
                 self.quic_trace_connection_id,
@@ -440,7 +440,7 @@ impl Connection {
 
     /// Start or end the intervals in which the connection cannot transmit, after a transmit
     /// attempt that hit `blocked` first, or no limit
-    fn update_quic_trace_transmit_blocked(
+    fn quic_trace_update_transmit_blocked(
         &mut self,
         blocked: Option<quic_trace::SendBlockedReason>,
     ) {
@@ -453,7 +453,7 @@ impl Connection {
             ),
             (&mut self.quic_trace_pacing_blocked, Pacing),
         ] {
-            streams::update_quic_trace_send_blocked(
+            streams::quic_trace_update_send_blocked(
                 &self.quic_trace,
                 self.quic_trace_connection_id,
                 interval,
@@ -464,9 +464,9 @@ impl Connection {
         }
     }
 
-    /// Start the `quic-trace` lifecycle of a received packet at `read_ns`, when the receive
+    /// Start the `quic_trace` lifecycle of a received packet at `read_ns`, when the receive
     /// system call that returned its datagram completed
-    fn quic_trace_rx(
+    fn quic_trace_rx_packet(
         &self,
         read_ns: u64,
         byte_len: usize,
@@ -484,20 +484,21 @@ impl Connection {
         self.quic_trace.packet(context)
     }
 
-    /// Start the `quic-trace` lifecycle of the packet that created this server connection
+    /// Start the `quic_trace` lifecycle of the packet that created this server connection
     ///
     /// The endpoint parsed and unprotected the packet, and the application's accept decrypted
     /// it, before the connection existed, so those stages are recorded at their measured
     /// instants. Routing covers the endpoint's work between parsing the header and removing its
     /// protection, and scheduling the wait for the application to accept the connection.
-    fn quic_trace_first(
+    fn quic_trace_first_packet(
         &self,
         timing: &FirstPacketTrace,
         byte_len: usize,
         packet_number: u64,
     ) -> quic_trace::PacketTrace {
         let datagram = &timing.datagram;
-        let mut trace = self.quic_trace_rx(datagram.read_ns, byte_len, Some(SpaceId::Initial));
+        let mut trace =
+            self.quic_trace_rx_packet(datagram.read_ns, byte_len, Some(SpaceId::Initial));
         trace.set_number(packet_number);
         let success = quic_trace::PacketOutcome::Success;
         let mut stages = vec![
@@ -621,7 +622,7 @@ impl Connection {
     ) -> Option<Transmit> {
         assert!(max_datagrams != 0);
         // Packets of an earlier transmit nobody took were never handed to a send.
-        drop(mem::take(&mut self.quic_trace_transmit));
+        drop(mem::take(&mut self.quic_trace_pending));
         let max_datagrams = match self.config.enable_segmentation_offload {
             false => 1,
             true => max_datagrams,
@@ -1112,7 +1113,7 @@ impl Connection {
             );
         }
 
-        self.update_quic_trace_transmit_blocked(quic_trace_blocked);
+        self.quic_trace_update_transmit_blocked(quic_trace_blocked);
         self.app_limited = buf.is_empty() && !congestion_blocked;
 
         // Send MTU probe if necessary
@@ -1274,7 +1275,7 @@ impl Connection {
                 ecn,
                 first_decode,
                 remaining,
-                quic_trace: timing,
+                quic_trace_timing: timing,
             }) => {
                 // A datagram from an untraced read carries no timing and starts no packet trace,
                 // so its handling reads no clock either.
@@ -1295,7 +1296,7 @@ impl Connection {
 
                 let trace = match (&timing, handling_ns) {
                     (Some(timing), Some(handling_ns)) => {
-                        let trace = self.quic_trace_rx(
+                        let trace = self.quic_trace_rx_packet(
                             timing.read_ns,
                             first_decode.len(),
                             first_decode.space(),
@@ -1426,7 +1427,7 @@ impl Connection {
                     debug!("path validation failed");
                     if let Some((_, prev)) = self.prev_path.take() {
                         self.path = prev;
-                        self.record_quic_trace_path();
+                        self.quic_trace_record_path();
                     }
                     self.path.challenge = None;
                     self.path.challenge_pending = false;
@@ -2216,7 +2217,7 @@ impl Connection {
         packet_number: u64,
         packet: InitialPacket,
         remaining: Option<BytesMut>,
-        quic_trace: Option<FirstPacketTrace>,
+        quic_trace_timing: Option<FirstPacketTrace>,
     ) -> Result<(), ConnectionError> {
         let span = trace_span!("first recv");
         let _guard = span.enter();
@@ -2240,8 +2241,8 @@ impl Connection {
             false,
         );
 
-        let trace = match &quic_trace {
-            Some(timing) => self.quic_trace_first(timing, len, packet_number),
+        let trace = match &quic_trace_timing {
+            Some(timing) => self.quic_trace_first_packet(timing, len, packet_number),
             None => quic_trace::PacketTrace::disabled(),
         };
         let result =
@@ -2257,7 +2258,7 @@ impl Connection {
                 remote,
                 ecn,
                 data,
-                quic_trace.map(|timing| timing.datagram.read_ns),
+                quic_trace_timing.map(|timing| timing.datagram.read_ns),
             );
         }
 
@@ -2458,7 +2459,7 @@ impl Connection {
             // datagram from an untraced read starts no packet trace.
             let mut trace = match read_ns {
                 Some(read_ns) => {
-                    let trace = self.quic_trace_rx(read_ns, data.len(), None);
+                    let trace = self.quic_trace_rx_packet(read_ns, data.len(), None);
                     trace
                         .phase_at(quic_trace::PacketPhase::ReadQueue, read_ns)
                         .finish(quic_trace::PacketOutcome::Success);
@@ -2466,7 +2467,7 @@ impl Connection {
                 }
                 None => quic_trace::PacketTrace::disabled(),
             };
-            let parse_trace = trace.phase(quic_trace::PacketPhase::HeaderParse);
+            let trace_parse = trace.phase(quic_trace::PacketPhase::HeaderParse);
             match PartialDecode::new(
                 data,
                 &FixedLengthConnectionIdParser::new(self.local_cid_state.cid_len()),
@@ -2474,21 +2475,17 @@ impl Connection {
                 self.endpoint_config.grease_quic_bit,
             ) {
                 Ok((partial_decode, rest)) => {
-                    {
-                        parse_trace.finish(quic_trace::PacketOutcome::Success);
-                        if let Some(space) = partial_decode.space() {
-                            trace.set_space(quic_trace_packet_space(space));
-                        }
-                        trace.set_byte_len(partial_decode.len());
+                    trace_parse.finish(quic_trace::PacketOutcome::Success);
+                    if let Some(space) = partial_decode.space() {
+                        trace.set_space(quic_trace_packet_space(space));
                     }
+                    trace.set_byte_len(partial_decode.len());
                     remaining = rest;
                     self.handle_decode(now, remote, ecn, partial_decode, trace);
                 }
                 Err(e) => {
-                    {
-                        parse_trace.finish(quic_trace::PacketOutcome::Malformed);
-                        trace.finish(quic_trace::PacketOutcome::Malformed);
-                    }
+                    trace_parse.finish(quic_trace::PacketOutcome::Malformed);
+                    trace.finish(quic_trace::PacketOutcome::Malformed);
                     trace!("malformed header: {}", e);
                     return;
                 }
@@ -2504,14 +2501,14 @@ impl Connection {
         partial_decode: PartialDecode,
         trace: quic_trace::PacketTrace,
     ) {
-        let unprotect_trace = trace.phase(quic_trace::PacketPhase::HeaderUnprotect);
+        let trace_unprotect = trace.phase(quic_trace::PacketPhase::HeaderUnprotect);
         let decoded = packet_crypto::unprotect_header(
             partial_decode,
             &self.spaces,
             self.zero_rtt_crypto.as_ref(),
             self.peer_params.stateless_reset_token,
         );
-        unprotect_trace.finish(match &decoded {
+        trace_unprotect.finish(match &decoded {
             Some(_) => quic_trace::PacketOutcome::Success,
             None => quic_trace::PacketOutcome::Dropped,
         });
@@ -2558,22 +2555,20 @@ impl Connection {
         let was_closed = self.state.is_closed();
         let was_drained = self.state.is_drained();
 
-        let decrypt_trace = trace.phase(quic_trace::PacketPhase::PayloadDecrypt);
+        let trace_decrypt = trace.phase(quic_trace::PacketPhase::PayloadDecrypt);
         let decrypted = match packet {
             None => Err(None),
             Some(mut packet) => self
                 .decrypt_packet(now, &mut packet)
                 .map(move |number| (packet, number)),
         };
-        {
-            decrypt_trace.finish(match &decrypted {
-                Ok(_) => quic_trace::PacketOutcome::Success,
-                Err(None) => quic_trace::PacketOutcome::AuthenticationFailed,
-                Err(Some(_)) => quic_trace::PacketOutcome::Malformed,
-            });
-            if let Ok((_, Some(number))) = &decrypted {
-                trace.set_number(*number);
-            }
+        trace_decrypt.finish(match &decrypted {
+            Ok(_) => quic_trace::PacketOutcome::Success,
+            Err(None) => quic_trace::PacketOutcome::AuthenticationFailed,
+            Err(Some(_)) => quic_trace::PacketOutcome::Malformed,
+        });
+        if let Ok((_, Some(number))) = &decrypted {
+            trace.set_number(*number);
         }
         let version_negotiation = matches!(
             &decrypted,
@@ -2997,7 +2992,7 @@ impl Connection {
                 Frame::Padding => continue,
                 _ => Some(trace_span!("frame", ty = %frame.ty())),
             };
-            let frame_trace = trace.phase(quic_trace::PacketPhase::FrameProcess);
+            let trace_frame = trace.phase(quic_trace::PacketPhase::FrameProcess);
 
             self.stats.frame_rx.record(&frame);
 
@@ -3016,7 +3011,7 @@ impl Connection {
                 Frame::Close(reason) => {
                     self.error = Some(reason.into());
                     self.state = State::Draining;
-                    frame_trace.finish(quic_trace::PacketOutcome::Success);
+                    trace_frame.finish(quic_trace::PacketOutcome::Success);
                     return Ok(());
                 }
                 _ => {
@@ -3026,7 +3021,7 @@ impl Connection {
                     return Err(err);
                 }
             }
-            frame_trace.finish(quic_trace::PacketOutcome::Success);
+            trace_frame.finish(quic_trace::PacketOutcome::Success);
         }
 
         if ack_eliciting {
@@ -3061,7 +3056,7 @@ impl Connection {
             };
             // Each decoded frame is processed in its own phase. A frame that ends processing with
             // an error leaves its phase abandoned, and the packet records why.
-            let frame_trace = trace.phase(quic_trace::PacketPhase::FrameProcess);
+            let trace_frame = trace.phase(quic_trace::PacketPhase::FrameProcess);
 
             self.stats.frame_rx.record(&frame);
             // Crypto, Stream and Datagram frames are special cased in order no pollute
@@ -3284,7 +3279,7 @@ impl Connection {
                                 .pending
                                 .retire_cids
                                 .push(frame.sequence);
-                            frame_trace.finish(quic_trace::PacketOutcome::Success);
+                            trace_frame.finish(quic_trace::PacketOutcome::Success);
                             continue;
                         }
                     };
@@ -3327,7 +3322,7 @@ impl Connection {
                         .ack_frequency_received(&ack_frequency, &mut space.pending_acks)?
                     {
                         // The AckFrequency frame is stale (we have already received a more recent one)
-                        frame_trace.finish(quic_trace::PacketOutcome::Success);
+                        trace_frame.finish(quic_trace::PacketOutcome::Success);
                         continue;
                     }
 
@@ -3357,7 +3352,7 @@ impl Connection {
                     }
                 }
             }
-            frame_trace.finish(quic_trace::PacketOutcome::Success);
+            trace_frame.finish(quic_trace::PacketOutcome::Success);
         }
 
         let space = &mut self.spaces[SpaceId::Data];
@@ -3428,7 +3423,7 @@ impl Connection {
         let prev_pto = self.pto(SpaceId::Data);
 
         let mut prev = mem::replace(&mut self.path, new_path);
-        self.record_quic_trace_path();
+        self.quic_trace_record_path();
         // Don't clobber the original path if the previous one hasn't been validated yet
         if prev.challenge.is_none() {
             prev.challenge = Some(self.rng.random());

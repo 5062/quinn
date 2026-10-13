@@ -26,7 +26,7 @@ pub use send::{FinishError, WriteError, Written};
 mod state;
 #[allow(unreachable_pub)] // fuzzing only
 pub use state::StreamsState;
-pub(super) use state::update_quic_trace_send_blocked;
+pub(super) use state::quic_trace_update_send_blocked;
 
 /// Access to streams
 pub struct Streams<'a> {
@@ -261,7 +261,7 @@ impl<'a> SendStream<'a> {
                 stream.connection_blocked = true;
                 self.state.connection_blocked.push(self.id);
             }
-            self.state.start_quic_trace_connection_blocked(self.id);
+            self.state.quic_trace_start_connection_blocked(self.id);
             return Err(WriteError::Blocked);
         }
 
@@ -269,7 +269,8 @@ impl<'a> SendStream<'a> {
         let written = match stream.write(source, limit) {
             // With connection-wide room left, only the stream's own `MAX_STREAM_DATA` blocks it.
             Err(WriteError::Blocked) => {
-                self.state.start_quic_trace_stream_blocked(self.id);
+                self.state
+                    .quic_trace_start_stream_flow_control_blocked(self.id);
                 return Err(WriteError::Blocked);
             }
             result => result?,
@@ -340,12 +341,12 @@ impl<'a> SendStream<'a> {
         stream.reset();
         // A reset stream no longer waits for credit, and its unsent data leaves the send window.
         for interval in [
-            &mut stream.quic_trace_flow_control_blocked,
+            &mut stream.quic_trace_stream_flow_control_blocked,
             &mut stream.quic_trace_connection_blocked,
         ] {
             std::mem::replace(interval, quic_trace::SendBlockedTrace::disabled()).finish();
         }
-        self.state.update_quic_trace_write_blocked();
+        self.state.quic_trace_update_write_blocked();
         self.pending.reset_stream.push((self.id, error_code));
 
         // Don't reopen an already-closed stream we haven't forgotten yet

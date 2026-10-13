@@ -59,9 +59,9 @@ pub trait AsyncUdpSocket: Send + Sync + Debug + 'static {
     fn try_send(&self, transmit: &Transmit) -> io::Result<()>;
 
     /// Send like [`AsyncUdpSocket::try_send`], but report the final send system call's own
-    /// result, before any error policy, and when that call returned on the `quic-trace` clock
+    /// result, before any error policy, and when that call returned on the quic_trace clock
     ///
-    /// A connection ends the `quic-trace` lifecycles of the packets a transmit carried at the
+    /// A connection ends the `quic_trace` lifecycles of the packets a transmit carried at the
     /// returned instant, and records them as dropped when the result is an error other than
     /// [`io::ErrorKind::WouldBlock`]. The instant is `None` when no transport event would be
     /// recorded, or when no system call was made. The default reads the clock after

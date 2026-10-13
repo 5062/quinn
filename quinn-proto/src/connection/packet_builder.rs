@@ -26,7 +26,7 @@ pub(super) struct PacketBuilder {
     pub(super) tag_len: usize,
     pub(super) _span: tracing::span::EnteredSpan,
     trace: quic_trace::PacketTrace,
-    encode_trace: quic_trace::PacketPhaseTrace,
+    trace_encode: quic_trace::PacketPhaseTrace,
 }
 
 impl PacketBuilder {
@@ -97,7 +97,7 @@ impl PacketBuilder {
             .with_space(super::quic_trace_packet_space(space_id)),
         );
         // Encoding starts with the header, as in mvfst and Google QUICHE.
-        let encode_trace = trace.phase(quic_trace::PacketPhase::FrameEncode);
+        let trace_encode = trace.phase(quic_trace::PacketPhase::FrameEncode);
 
         let number = PacketNumber::new(exact_number, space.largest_acked_packet.unwrap_or(0));
         let header = match space_id {
@@ -180,7 +180,7 @@ impl PacketBuilder {
             ack_eliciting,
             _span: span,
             trace,
-            encode_trace,
+            trace_encode,
         })
     }
 
@@ -282,7 +282,7 @@ impl PacketBuilder {
         let encode_start = self.partial_encode.start;
         let len = buffer.len() - encode_start;
         let mut trace = self.trace;
-        self.encode_trace.finish(quic_trace::PacketOutcome::Success);
+        self.trace_encode.finish(quic_trace::PacketOutcome::Success);
         trace.set_byte_len(len);
         // A STREAM frame is recorded once its packet's frames are encoded, before encryption,
         // as mvfst records it. A frame without bytes, such as a bare FIN, covers no range.
@@ -296,7 +296,7 @@ impl PacketBuilder {
                 quic_trace::PacketOutcome::Success,
             );
         }
-        let encrypt_trace = trace.phase(quic_trace::PacketPhase::PacketEncrypt);
+        let trace_encrypt = trace.phase(quic_trace::PacketPhase::PacketEncrypt);
         let packet_buf = &mut buffer[encode_start..];
         self.partial_encode.finish(
             packet_buf,
@@ -304,10 +304,10 @@ impl PacketBuilder {
             Some((self.exact_number, packet_crypto)),
         );
 
-        encrypt_trace.finish(quic_trace::PacketOutcome::Success);
+        trace_encrypt.finish(quic_trace::PacketOutcome::Success);
         // The packet's lifecycle ends when the send carrying it returns, so it waits in
         // `send_queue` with the rest of the transmit until the caller learns the outcome.
-        conn.quic_trace_transmit.push(trace);
+        conn.quic_trace_pending.push(trace);
         conn.config.qlog_sink.emit_packet_sent(
             self.exact_number,
             len,

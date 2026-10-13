@@ -17,7 +17,7 @@ pub(super) struct Send {
     pub(super) stop_reason: Option<VarInt>,
     /// The interval in which a write found this stream's `MAX_STREAM_DATA` used up, which ends
     /// when the peer raises it or the stream goes away
-    pub(super) quic_trace_flow_control_blocked: quic_trace::SendBlockedTrace,
+    pub(super) quic_trace_stream_flow_control_blocked: quic_trace::SendBlockedTrace,
     /// The interval in which a write to this stream found a connection-wide limit, `MAX_DATA` or
     /// the window of unacknowledged data, used up, which ends when the limit relaxes or the
     /// stream goes away
@@ -34,7 +34,7 @@ impl Send {
             fin_pending: false,
             connection_blocked: false,
             stop_reason: None,
-            quic_trace_flow_control_blocked: quic_trace::SendBlockedTrace::disabled(),
+            quic_trace_stream_flow_control_blocked: quic_trace::SendBlockedTrace::disabled(),
             quic_trace_connection_blocked: quic_trace::SendBlockedTrace::disabled(),
         })
     }

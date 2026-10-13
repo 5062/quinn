@@ -115,13 +115,13 @@ pub struct RecvMeta {
     /// Populated on platforms: Windows, Linux, Android (API level > 25),
     /// FreeBSD, OpenBSD, NetBSD, macOS, and iOS.
     pub dst_ip: Option<IpAddr>,
-    /// When the receive system call that filled this buffer returned, on the `quic-trace`
+    /// When the receive system call that filled this buffer returned, on the `quic_trace`
     /// clock
     ///
-    /// Every packet in the buffer starts its `quic-trace` lifecycle at this instant. `None`
+    /// Every packet in the buffer starts its `quic_trace` lifecycle at this instant. `None`
     /// when no transport event would be recorded, so an untraced build reads no clock, and
     /// the buffer's packets are then not traced.
-    pub read_ns: Option<u64>,
+    pub quic_trace_read_ns: Option<u64>,
 }
 
 impl Default for RecvMeta {
@@ -133,7 +133,7 @@ impl Default for RecvMeta {
             stride: 0,
             ecn: None,
             dst_ip: None,
-            read_ns: None,
+            quic_trace_read_ns: None,
         }
     }
 }

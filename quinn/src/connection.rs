@@ -591,8 +591,8 @@ impl Connection {
     /// Unlike [`Self::stable_id`], it is never reused within the process, so an
     /// application that tags its own trace events with it pairs them with this
     /// connection's packets even after other connections come and go.
-    pub fn trace_connection_id(&self) -> u64 {
-        self.0.trace_connection_id
+    pub fn quic_trace_connection_id(&self) -> u64 {
+        self.0.quic_trace_connection_id
     }
 
     /// Update traffic keys spontaneously
@@ -897,7 +897,7 @@ impl ConnectionRef {
         socket: Arc<dyn AsyncUdpSocket>,
         runtime: Arc<dyn Runtime>,
     ) -> Self {
-        let trace_connection_id = conn.quic_trace_connection_id();
+        let quic_trace_connection_id = conn.quic_trace_connection_id();
         let this = Self(Arc::new(ConnectionInner {
             state: Mutex::new(State {
                 inner: conn,
@@ -921,7 +921,7 @@ impl ConnectionRef {
                 buffered_transmit: None,
             }),
             shared: Shared::default(),
-            trace_connection_id,
+            quic_trace_connection_id,
         }));
         {
             let mut state = this.state.lock("ConnectionRef::new");
@@ -980,7 +980,7 @@ pub(crate) struct ConnectionInner {
     pub(crate) shared: Shared,
     /// Transport trace identity, which `quinn-proto` allocates with the connection and never
     /// reuses in the process, unlike `stable_id`, an address the allocator can reuse
-    trace_connection_id: u64,
+    quic_trace_connection_id: u64,
 }
 
 #[derive(Debug, Default)]
@@ -1048,7 +1048,7 @@ impl State {
                                 None => 1,
                                 Some(s) => t.size.div_ceil(s), // round up
                             };
-                            (t, self.inner.take_quic_trace_transmit())
+                            (t, self.inner.take_quic_trace_pending())
                         }
                         None => break,
                     }

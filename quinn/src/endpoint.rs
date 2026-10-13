@@ -808,7 +808,7 @@ impl RecvState {
                                 meta.ecn.map(proto_ecn),
                                 buf,
                                 &mut response_buffer,
-                                meta.read_ns,
+                                meta.quic_trace_read_ns,
                             ) {
                                 Some(DatagramEvent::NewConnection(incoming)) => {
                                     if self.connections.close.is_none() {
@@ -819,12 +819,11 @@ impl RecvState {
                                         respond(transmit, &response_buffer, socket);
                                     }
                                 }
-                                Some(DatagramEvent::ConnectionEvent(handle, event)) => {
+                                Some(DatagramEvent::ConnectionEvent(handle, mut event)) => {
                                     // Ignoring errors from dropped connections that haven't yet been cleaned up
                                     received_connection_packet = true;
                                     let sender = self.connections.senders.get_mut(&handle).unwrap();
-                                    let mut event = event;
-                                    event.record_quic_trace_enqueued();
+                                    event.quic_trace_record_enqueued();
                                     let _ = sender.send(ConnectionEvent::Proto(event));
                                 }
                                 Some(DatagramEvent::Response(transmit)) => {

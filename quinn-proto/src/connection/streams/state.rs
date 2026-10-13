@@ -274,7 +274,7 @@ impl StreamsState {
     ///
     /// If successful, returns whether a `MAX_DATA` frame needs to be transmitted.
     /// A frame for a closed, finished, or stopped stream is accepted for flow control but its
-    /// data is discarded, so `quic-trace` records it as dropped rather than as delivered.
+    /// data is discarded, so `quic_trace` records it as dropped rather than as delivered.
     pub(crate) fn received_buffered(
         &mut self,
         frame: frame::Stream,
@@ -691,12 +691,12 @@ impl StreamsState {
         self.unacked_data -= frame.offsets.end - frame.offsets.start;
         if !stream.ack(frame) {
             // The stream is unfinished or may still need retransmits
-            self.update_quic_trace_write_blocked();
+            self.quic_trace_update_write_blocked();
             return;
         }
 
         entry.remove_entry();
-        self.update_quic_trace_write_blocked();
+        self.quic_trace_update_write_blocked();
         self.stream_freed(id, StreamHalf::Send);
         self.events.push_back(StreamEvent::Finished { id });
     }
@@ -758,7 +758,7 @@ impl StreamsState {
     /// Handle increase to connection-level flow control limit
     pub(crate) fn received_max_data(&mut self, n: VarInt) {
         self.max_data = self.max_data.max(n.into());
-        self.update_quic_trace_write_blocked();
+        self.quic_trace_update_write_blocked();
     }
 
     pub(crate) fn received_max_stream_data(
@@ -782,7 +782,7 @@ impl StreamsState {
         {
             if ss.increase_max_data(offset) {
                 mem::replace(
-                    &mut ss.quic_trace_flow_control_blocked,
+                    &mut ss.quic_trace_stream_flow_control_blocked,
                     quic_trace::SendBlockedTrace::disabled(),
                 )
                 .finish();
@@ -794,7 +794,7 @@ impl StreamsState {
                     // it needs to be in the connection blocked list.
                     ss.connection_blocked = true;
                     self.connection_blocked.push(id);
-                    self.start_quic_trace_connection_blocked(id);
+                    self.quic_trace_start_connection_blocked(id);
                 }
             }
         } else if id.initiator() == self.side && self.is_local_unopened(id) {
@@ -815,14 +815,14 @@ impl StreamsState {
     }
 
     /// Start the interval in which a write found `id`'s `MAX_STREAM_DATA` used up
-    pub(super) fn start_quic_trace_stream_blocked(&mut self, id: StreamId) {
+    pub(super) fn quic_trace_start_stream_flow_control_blocked(&mut self, id: StreamId) {
         let Some(stream) = self.send.get_mut(&id).and_then(|s| s.as_mut()) else {
             return;
         };
-        update_quic_trace_send_blocked(
+        quic_trace_update_send_blocked(
             &self.quic_trace,
             self.quic_trace_connection_id,
-            &mut stream.quic_trace_flow_control_blocked,
+            &mut stream.quic_trace_stream_flow_control_blocked,
             quic_trace::SendBlockedReason::StreamFlowControl,
             Some(id.0),
             true,
@@ -831,9 +831,9 @@ impl StreamsState {
 
     /// Start the interval in which a write to `id` waits in `connection_blocked` for a
     /// connection-wide limit to relax
-    pub(super) fn start_quic_trace_connection_blocked(&mut self, id: StreamId) {
+    pub(super) fn quic_trace_start_connection_blocked(&mut self, id: StreamId) {
         let reason = self.quic_trace_write_limit();
-        self.set_quic_trace_connection_blocked(id, reason);
+        self.quic_trace_set_connection_blocked(id, reason);
     }
 
     /// Follow a change of the connection-wide limit in the intervals of every stream waiting in
@@ -841,14 +841,14 @@ impl StreamsState {
     ///
     /// Each stream records its own interval, as Google QUICHE and mvfst do, and the interval ends
     /// once no connection-wide limit holds, or changes its reason when the other one does.
-    pub(super) fn update_quic_trace_write_blocked(&mut self) {
+    pub(super) fn quic_trace_update_write_blocked(&mut self) {
         let reason = self.quic_trace_write_limit();
         if reason == self.quic_trace_write_blocked {
             return;
         }
         self.quic_trace_write_blocked = reason;
         for i in 0..self.connection_blocked.len() {
-            self.set_quic_trace_connection_blocked(self.connection_blocked[i], reason);
+            self.quic_trace_set_connection_blocked(self.connection_blocked[i], reason);
         }
     }
 
@@ -864,7 +864,7 @@ impl StreamsState {
     }
 
     /// Record that a write to `id` is blocked by `reason`, or no longer blocked
-    fn set_quic_trace_connection_blocked(
+    fn quic_trace_set_connection_blocked(
         &mut self,
         id: StreamId,
         reason: Option<quic_trace::SendBlockedReason>,
@@ -985,7 +985,7 @@ impl StreamsState {
 
     pub(crate) fn set_send_window(&mut self, send_window: u64) {
         self.send_window = send_window;
-        self.update_quic_trace_write_blocked();
+        self.quic_trace_update_write_blocked();
     }
 
     /// Set the receive_window and returns whether the receive_window has been
@@ -1110,7 +1110,7 @@ pub(super) fn get_or_insert_recv(
 ///
 /// mvfst keeps its intervals the same way, so both stacks open one interval per condition and
 /// reason rather than one per write.
-pub(crate) fn update_quic_trace_send_blocked(
+pub(crate) fn quic_trace_update_send_blocked(
     handle: &quic_trace::Handle,
     connection_id: u64,
     interval: &mut quic_trace::SendBlockedTrace,

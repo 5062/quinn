@@ -225,7 +225,7 @@ impl UdpSocketState {
     }
 
     /// Sends a [`Transmit`] like [`UdpSocketState::try_send`], and also returns when the
-    /// final send system call returned, on the `quic-trace` clock.
+    /// final send system call returned, on the quic_trace clock.
     ///
     /// The result is the system call's own, before any error policy, so a caller can tell
     /// a datagram the kernel accepted from one it discarded. Each system call is recorded
@@ -242,7 +242,7 @@ impl UdpSocketState {
 
     /// Receives datagrams into `bufs`, one [`RecvMeta`] per buffer filled.
     ///
-    /// Each [`RecvMeta::read_ns`] holds the instant the receive system call that filled
+    /// Each [`RecvMeta::quic_trace_read_ns`] holds the instant the receive system call that filled
     /// it returned, and each system call is recorded as a `quic_trace:udp_socket`
     /// operation ending at that instant.
     pub fn recv(
@@ -355,18 +355,18 @@ fn send(
     );
 
     loop {
-        let mut syscall =
+        let mut trace_call =
             quic_trace::global().socket_call(quic_trace::Direction::Tx, connection_id);
         let n = unsafe { libc::sendmsg(io.as_raw_fd(), &msg_hdr, 0) };
-        let sent_ns = syscall.returned();
+        let sent_ns = trace_call.returned();
 
         if n >= 0 {
-            syscall.succeeded(transmit_stats(transmit));
+            trace_call.succeeded(transmit_stats(transmit));
             return (Ok(()), sent_ns);
         }
 
         let e = io::Error::last_os_error();
-        syscall.failed(&e);
+        trace_call.failed(&e);
         match e.kind() {
             // Retry the transmission
             io::ErrorKind::Interrupted => continue,
@@ -450,18 +450,18 @@ fn send(
         cnt += 1;
     }
     loop {
-        let mut syscall =
+        let mut trace_call =
             quic_trace::global().socket_call(quic_trace::Direction::Tx, connection_id);
         let n = unsafe { sendmsg_x(io.as_raw_fd(), hdrs.as_ptr(), cnt as u32, 0) };
-        let sent_ns = syscall.returned();
+        let sent_ns = trace_call.returned();
 
         if n >= 0 {
-            syscall.succeeded(transmit_stats(transmit));
+            trace_call.succeeded(transmit_stats(transmit));
             return (Ok(()), sent_ns);
         }
 
         let e = io::Error::last_os_error();
-        syscall.failed(&e);
+        trace_call.failed(&e);
         match e.kind() {
             // Retry the transmission
             io::ErrorKind::Interrupted => continue,
@@ -491,18 +491,18 @@ fn send(
         state.sendmsg_einval(),
     );
     loop {
-        let mut syscall =
+        let mut trace_call =
             quic_trace::global().socket_call(quic_trace::Direction::Tx, connection_id);
         let n = unsafe { libc::sendmsg(io.as_raw_fd(), &hdr, 0) };
-        let sent_ns = syscall.returned();
+        let sent_ns = trace_call.returned();
 
         if n >= 0 {
-            syscall.succeeded(transmit_stats(transmit));
+            trace_call.succeeded(transmit_stats(transmit));
             return (Ok(()), sent_ns);
         }
 
         let e = io::Error::last_os_error();
-        syscall.failed(&e);
+        trace_call.failed(&e);
         match e.kind() {
             // Retry the transmission
             io::ErrorKind::Interrupted => continue,
@@ -525,8 +525,8 @@ fn recv(io: SockRef<'_>, bufs: &mut [IoSliceMut<'_>], meta: &mut [RecvMeta]) -> 
             &mut hdrs[i].msg_hdr,
         );
     }
-    let (msg_count, syscall, read_ns) = loop {
-        let mut syscall = quic_trace::global().socket_call(quic_trace::Direction::Rx, None);
+    let (msg_count, trace_call, quic_trace_read_ns) = loop {
+        let mut trace_call = quic_trace::global().socket_call(quic_trace::Direction::Rx, None);
         let n = unsafe {
             libc::recvmmsg(
                 io.as_raw_fd(),
@@ -536,14 +536,14 @@ fn recv(io: SockRef<'_>, bufs: &mut [IoSliceMut<'_>], meta: &mut [RecvMeta]) -> 
                 ptr::null_mut::<libc::timespec>(),
             )
         };
-        let read_ns = syscall.returned();
+        let quic_trace_read_ns = trace_call.returned();
 
         if n >= 0 {
-            break (n, syscall, read_ns);
+            break (n, trace_call, quic_trace_read_ns);
         }
 
         let e = io::Error::last_os_error();
-        syscall.failed(&e);
+        trace_call.failed(&e);
         match e.kind() {
             // Retry receiving
             io::ErrorKind::Interrupted => continue,
@@ -552,9 +552,9 @@ fn recv(io: SockRef<'_>, bufs: &mut [IoSliceMut<'_>], meta: &mut [RecvMeta]) -> 
     };
     for i in 0..(msg_count as usize) {
         meta[i] = decode_recv(&names[i], &hdrs[i].msg_hdr, hdrs[i].msg_len as usize);
-        meta[i].read_ns = read_ns;
+        meta[i].quic_trace_read_ns = quic_trace_read_ns;
     }
-    syscall.succeeded(recv_stats(&meta[..msg_count as usize]));
+    trace_call.succeeded(recv_stats(&meta[..msg_count as usize]));
     Ok(msg_count as usize)
 }
 
@@ -573,17 +573,17 @@ fn recv(io: SockRef<'_>, bufs: &mut [IoSliceMut<'_>], meta: &mut [RecvMeta]) -> 
     for i in 0..max_msg_count {
         prepare_recv(&mut bufs[i], &mut names[i], &mut ctrls[i], &mut hdrs[i]);
     }
-    let (msg_count, syscall, read_ns) = loop {
-        let mut syscall = quic_trace::global().socket_call(quic_trace::Direction::Rx, None);
+    let (msg_count, trace_call, quic_trace_read_ns) = loop {
+        let mut trace_call = quic_trace::global().socket_call(quic_trace::Direction::Rx, None);
         let n = unsafe { recvmsg_x(io.as_raw_fd(), hdrs.as_mut_ptr(), max_msg_count as _, 0) };
-        let read_ns = syscall.returned();
+        let quic_trace_read_ns = trace_call.returned();
 
         if n >= 0 {
-            break (n, syscall, read_ns);
+            break (n, trace_call, quic_trace_read_ns);
         }
 
         let e = io::Error::last_os_error();
-        syscall.failed(&e);
+        trace_call.failed(&e);
         match e.kind() {
             // Retry receiving
             io::ErrorKind::Interrupted => continue,
@@ -592,9 +592,9 @@ fn recv(io: SockRef<'_>, bufs: &mut [IoSliceMut<'_>], meta: &mut [RecvMeta]) -> 
     };
     for i in 0..(msg_count as usize) {
         meta[i] = decode_recv(&names[i], &hdrs[i], hdrs[i].msg_datalen as usize);
-        meta[i].read_ns = read_ns;
+        meta[i].quic_trace_read_ns = quic_trace_read_ns;
     }
-    syscall.succeeded(recv_stats(&meta[..msg_count as usize]));
+    trace_call.succeeded(recv_stats(&meta[..msg_count as usize]));
     Ok(msg_count as usize)
 }
 
@@ -604,23 +604,23 @@ fn recv(io: SockRef<'_>, bufs: &mut [IoSliceMut<'_>], meta: &mut [RecvMeta]) -> 
     let mut ctrl = cmsg::Aligned(MaybeUninit::<[u8; CMSG_LEN]>::uninit());
     let mut hdr = unsafe { mem::zeroed::<libc::msghdr>() };
     prepare_recv(&mut bufs[0], &mut name, &mut ctrl, &mut hdr);
-    let (n, syscall, read_ns) = loop {
-        let mut syscall = quic_trace::global().socket_call(quic_trace::Direction::Rx, None);
+    let (n, trace_call, quic_trace_read_ns) = loop {
+        let mut trace_call = quic_trace::global().socket_call(quic_trace::Direction::Rx, None);
         let n = unsafe { libc::recvmsg(io.as_raw_fd(), &mut hdr, 0) };
-        let read_ns = syscall.returned();
+        let quic_trace_read_ns = trace_call.returned();
 
         if hdr.msg_flags & libc::MSG_TRUNC != 0 {
             // The call itself succeeded; quinn discards the truncated datagram and reads again.
-            syscall.succeeded(quic_trace::SocketStats::buffer(n.max(0) as usize, None));
+            trace_call.succeeded(quic_trace::SocketStats::buffer(n.max(0) as usize, None));
             continue;
         }
 
         if n >= 0 {
-            break (n, syscall, read_ns);
+            break (n, trace_call, quic_trace_read_ns);
         }
 
         let e = io::Error::last_os_error();
-        syscall.failed(&e);
+        trace_call.failed(&e);
         match e.kind() {
             // Retry receiving
             io::ErrorKind::Interrupted => continue,
@@ -628,8 +628,8 @@ fn recv(io: SockRef<'_>, bufs: &mut [IoSliceMut<'_>], meta: &mut [RecvMeta]) -> 
         }
     };
     meta[0] = decode_recv(&name, &hdr, n as usize);
-    meta[0].read_ns = read_ns;
-    syscall.succeeded(recv_stats(&meta[..1]));
+    meta[0].quic_trace_read_ns = quic_trace_read_ns;
+    trace_call.succeeded(recv_stats(&meta[..1]));
     Ok(1)
 }
 
@@ -864,7 +864,7 @@ fn decode_recv(
         ecn: EcnCodepoint::from_bits(ecn_bits),
         dst_ip,
         // The caller stamps the receive system call's completion.
-        read_ns: None,
+        quic_trace_read_ns: None,
     }
 }
 

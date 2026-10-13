@@ -157,9 +157,9 @@ impl Endpoint {
     }
 
     /// Process an incoming UDP datagram returned by a receive system call that completed at
-    /// `read_ns` on the `quic-trace` clock
+    /// `read_ns` on the quic_trace clock
     ///
-    /// Every packet in the datagram starts its `quic-trace` lifecycle at `read_ns`, and the
+    /// Every packet in the datagram starts its `quic_trace` lifecycle at `read_ns`, and the
     /// time until its processing begins is its `read_queue` phase. A datagram without
     /// `read_ns` came from an untraced read, so its packets are not traced and its handling
     /// reads no clock.
@@ -184,7 +184,7 @@ impl Endpoint {
             self.config.grease_quic_bit,
         ) {
             Ok((first_decode, remaining)) => {
-                let quic_trace = read_ns.zip(packet_start_ns).map(|(read_ns, start_ns)| {
+                let quic_trace_timing = read_ns.zip(packet_start_ns).map(|(read_ns, start_ns)| {
                     crate::shared::DatagramTrace {
                         read_ns,
                         start_ns,
@@ -198,7 +198,7 @@ impl Endpoint {
                     ecn,
                     first_decode,
                     remaining,
-                    quic_trace,
+                    quic_trace_timing,
                 }
             }
             Err(PacketDecodeError::UnsupportedVersion {
@@ -509,7 +509,10 @@ impl Endpoint {
             )));
         }
 
-        let unprotect_start_ns = event.quic_trace.as_ref().map(|_| quic_trace::now_ns());
+        let unprotect_start_ns = event
+            .quic_trace_timing
+            .as_ref()
+            .map(|_| quic_trace::now_ns());
         let packet = match event.first_decode.finish(Some(&*crypto.header.remote)) {
             Ok(packet) => packet,
             Err(e) => {
@@ -519,14 +522,15 @@ impl Endpoint {
         };
         // The connection that traces this packet does not exist until the application accepts
         // it, so the stages measured here travel with the `Incoming`.
-        let quic_trace = event
-            .quic_trace
-            .zip(unprotect_start_ns)
-            .map(|(datagram, start_ns)| FirstPacketTrace {
-                datagram,
-                unprotect_ns: start_ns..quic_trace::now_ns(),
-                decrypt_ns: None,
-            });
+        let quic_trace_timing =
+            event
+                .quic_trace_timing
+                .zip(unprotect_start_ns)
+                .map(|(datagram, start_ns)| FirstPacketTrace {
+                    datagram,
+                    unprotect_ns: start_ns..quic_trace::now_ns(),
+                    decrypt_ns: None,
+                });
 
         if !packet.reserved_bits_valid() {
             debug!("dropping connection attempt with invalid reserved bits");
@@ -572,7 +576,7 @@ impl Endpoint {
             token,
             incoming_idx,
             improper_drop_warner: IncomingImproperDropWarner,
-            quic_trace,
+            quic_trace_timing,
         }))
     }
 
@@ -632,7 +636,10 @@ impl Endpoint {
             });
         }
 
-        let decrypt_start_ns = incoming.quic_trace.as_ref().map(|_| quic_trace::now_ns());
+        let decrypt_start_ns = incoming
+            .quic_trace_timing
+            .as_ref()
+            .map(|_| quic_trace::now_ns());
         if incoming
             .crypto
             .packet
@@ -652,8 +659,9 @@ impl Endpoint {
             });
         };
 
-        if let (Some(trace), Some(start_ns)) = (&mut incoming.quic_trace, decrypt_start_ns) {
-            trace.decrypt_ns = Some(start_ns..quic_trace::now_ns());
+        if let (Some(timing), Some(start_ns)) = (&mut incoming.quic_trace_timing, decrypt_start_ns)
+        {
+            timing.decrypt_ns = Some(start_ns..quic_trace::now_ns());
         }
 
         let ch = ConnectionHandle(self.connections.vacant_key());
@@ -708,7 +716,7 @@ impl Endpoint {
             packet_number,
             incoming.packet,
             incoming.rest,
-            incoming.quic_trace,
+            incoming.quic_trace_timing,
         ) {
             Ok(()) => {
                 trace!(id = ch.0, icid = %dst_cid, "new connection");
@@ -1222,8 +1230,8 @@ pub struct Incoming {
     token: IncomingToken,
     incoming_idx: usize,
     improper_drop_warner: IncomingImproperDropWarner,
-    /// The first packet's `quic-trace` timing, absent when its read was not traced
-    quic_trace: Option<FirstPacketTrace>,
+    /// The first packet's `quic_trace` timing, absent when its read was not traced
+    quic_trace_timing: Option<FirstPacketTrace>,
 }
 
 impl Incoming {

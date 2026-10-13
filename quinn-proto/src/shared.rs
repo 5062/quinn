@@ -24,11 +24,11 @@ pub(crate) struct DatagramConnectionEvent {
     pub(crate) ecn: Option<EcnCodepoint>,
     pub(crate) first_decode: PartialDecode,
     pub(crate) remaining: Option<BytesMut>,
-    /// The datagram's `quic-trace` timing, absent when its read was not traced
-    pub(crate) quic_trace: Option<DatagramTrace>,
+    /// The datagram's `quic_trace` timing, absent when its read was not traced
+    pub(crate) quic_trace_timing: Option<DatagramTrace>,
 }
 
-/// The `quic-trace` timing of a datagram, measured before its connection handles it
+/// The `quic_trace` timing of a datagram, measured before its connection handles it
 #[derive(Debug)]
 pub(crate) struct DatagramTrace {
     /// When the receive system call that returned the datagram completed
@@ -41,7 +41,7 @@ pub(crate) struct DatagramTrace {
     pub(crate) enqueued_ns: Option<u64>,
 }
 
-/// The `quic-trace` timing of a connection's first packet, which the endpoint unprotects and
+/// The `quic_trace` timing of a connection's first packet, which the endpoint unprotects and
 /// the application's accept decrypts before the connection exists
 #[derive(Debug)]
 pub(crate) struct FirstPacketTrace {
@@ -57,11 +57,11 @@ impl ConnectionEvent {
     /// Record when this datagram is handed to the connection task.
     ///
     /// Only a datagram from a traced read reads the clock.
-    pub fn record_quic_trace_enqueued(&mut self) {
+    pub fn quic_trace_record_enqueued(&mut self) {
         let ConnectionEventInner::Datagram(event) = &mut self.0 else {
             return;
         };
-        if let Some(timing) = &mut event.quic_trace {
+        if let Some(timing) = &mut event.quic_trace_timing {
             timing.enqueued_ns = Some(quic_trace::now_ns());
         }
     }

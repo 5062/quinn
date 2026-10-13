@@ -53,7 +53,7 @@ impl UdpSocketState {
     }
 
     /// Sends a [`Transmit`] like [`UdpSocketState::try_send`], and also returns when the
-    /// send returned, on the `quic-trace` clock.
+    /// send returned, on the quic_trace clock.
     ///
     /// This platform's sends are not traced at the system call, so the instant is read
     /// after the send returns.
@@ -87,7 +87,7 @@ impl UdpSocketState {
             addr: addr.as_socket().unwrap(),
             ecn: None,
             dst_ip: None,
-            read_ns: quic_trace::global().now_ns_if_enabled(),
+            quic_trace_read_ns: quic_trace::global().now_ns_if_enabled(),
         };
         Ok(1)
     }
