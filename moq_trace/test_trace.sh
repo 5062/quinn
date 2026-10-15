@@ -4,7 +4,7 @@
 #
 #   moq_trace/test_trace.sh [cargo flags...]
 #
-# Needs LTTng and the moq-trace command on PATH, which the moq-trace checkout's
+# Needs LTTng and the moq-trace command on PATH, which the moq-workspace checkout's
 # development shell provides. The fixture, quinn/tests/quic_trace.rs, runs
 # transfers whose writes block on stream flow control, connection flow control,
 # and the send buffer.
@@ -12,7 +12,7 @@ set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
 if ! command -v moq-trace >/dev/null 2>&1; then
-  echo "moq-trace must be on PATH; run from the moq-trace development shell" >&2
+  echo "moq-trace must be on PATH; run from the moq-workspace development shell" >&2
   exit 1
 fi
 cd "$here/.."
