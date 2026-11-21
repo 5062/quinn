@@ -46,7 +46,10 @@ carry no connection ID, because one endpoint socket serves every connection.
   before, and its packets end `dropped`.
 - **Platforms.** The hooks time system calls in the Unix `quinn-udp` backend.
   The fallback and Windows backends make no socket events, and their packets
-  start and end at instants read just after the call.
+  start and end at instants read just after the call. The DPDK socket
+  (built with `QUINN_BUILD_DPDK=1`) makes none either: an RX packet starts when the port's polling thread
+  received its frame, so `read_queue` includes the hand-off to the endpoint's
+  task, and a TX packet ends when the frame was handed to the NIC's queue.
 - **Packet outcomes.** These match mvfst's and Google QUICHE's. A packet that
   parses but leaves processing through an error ends `malformed`, a duplicate,
   one that arrives before its keys, or one from an unexpected peer ends

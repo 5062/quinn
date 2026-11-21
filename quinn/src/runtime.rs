@@ -214,6 +214,9 @@ mod tokio;
 #[cfg(feature = "runtime-tokio")]
 pub use self::tokio::TokioRuntime;
 
+#[cfg(quinn_dpdk)]
+pub mod dpdk;
+
 #[cfg(feature = "async-io")]
 mod async_io;
 // Due to MSRV, we must specify `self::` where there's crate/module ambiguity

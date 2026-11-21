@@ -28,6 +28,10 @@ impl Runtime for TokioRuntime {
     }
 
     fn wrap_udp_socket(&self, sock: std::net::UdpSocket) -> io::Result<Arc<dyn AsyncUdpSocket>> {
+        #[cfg(quinn_dpdk)]
+        if std::env::var_os("QUINN_DPDK_EAL").is_some() {
+            return super::dpdk::from_env(sock);
+        }
         Ok(Arc::new(UdpSocket {
             inner: udp::UdpSocketState::new((&sock).into())?,
             io: tokio::net::UdpSocket::from_std(sock)?,

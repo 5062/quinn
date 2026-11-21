@@ -89,6 +89,8 @@ url = { workspace = true }
 
 [build-dependencies]
 cfg_aliases = { workspace = true }
+# Compiles the DPDK shim when `QUINN_BUILD_DPDK` is set; see build.rs.
+cc = "1.2"
 
 [[example]]
 name = "server"

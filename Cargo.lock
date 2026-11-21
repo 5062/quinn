@@ -2079,6 +2079,7 @@ dependencies = [
  "async-std",
  "bencher",
  "bytes",
+ "cc",
  "cfg_aliases",
  "clap",
  "crc",
