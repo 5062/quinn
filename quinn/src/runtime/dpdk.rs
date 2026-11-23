@@ -481,18 +481,34 @@ fn write(out: &mut [u8], h: &Header, payload: &[u8]) -> usize {
     let udp = &mut out[34..42];
     udp[0..2].copy_from_slice(&h.src.port().to_be_bytes());
     udp[2..4].copy_from_slice(&h.dst.port().to_be_bytes());
-    udp[4..6].copy_from_slice(&((8 + payload.len()) as u16).to_be_bytes());
-    // A zero UDP checksum means "none" over IPv4; QUIC authenticates every packet.
+    let udp_len = (8 + payload.len()) as u16;
+    udp[4..6].copy_from_slice(&udp_len.to_be_bytes());
     udp[6..8].fill(0);
     out[HEADERS..HEADERS + payload.len()].copy_from_slice(payload);
+    // Zero would be valid over IPv4, but Linux UDP GRO refuses such datagrams, so
+    // receivers would take every segment separately.
+    let pseudo = word_sum(&out[26..34]) + 17 + u64::from(udp_len);
+    let udp_sum = fold(pseudo + word_sum(&out[34..HEADERS + payload.len()]));
+    // An all-zero result is sent as all ones, since zero means "no checksum".
+    let udp_sum = if udp_sum == 0 { 0xffff } else { udp_sum };
+    out[40..42].copy_from_slice(&udp_sum.to_be_bytes());
     HEADERS + payload.len()
 }
 
+/// The Internet checksum of `header`.
 fn checksum(header: &[u8]) -> u16 {
-    let mut sum: u32 = header
-        .chunks(2)
-        .map(|w| u32::from(u16::from_be_bytes([w[0], w[1]])))
-        .sum();
+    fold(word_sum(header))
+}
+
+/// Sums `data` as big-endian 16-bit words, padding an odd tail with a zero byte.
+fn word_sum(data: &[u8]) -> u64 {
+    data.chunks(2)
+        .map(|w| u64::from(u16::from_be_bytes([w[0], *w.get(1).unwrap_or(&0)])))
+        .sum()
+}
+
+/// Folds a word sum to 16 bits and complements it.
+fn fold(mut sum: u64) -> u16 {
     while sum > 0xffff {
         sum = (sum & 0xffff) + (sum >> 16);
     }
@@ -596,6 +612,18 @@ mod tests {
         );
         // A valid header sums to zero once its checksum is included.
         assert_eq!(checksum(&out[14..34]), 0);
+        // So does the UDP datagram with its pseudo-header, worked out here word by
+        // word: addresses, protocol, UDP length, then the datagram padded to even.
+        let mut words = out[26..34].to_vec();
+        words.extend([0, 17, 0, 13]);
+        words.extend(&out[34..len]);
+        words.push(0);
+        let total: u32 = words
+            .chunks(2)
+            .map(|w| u32::from(w[0]) << 8 | u32::from(w[1]))
+            .sum();
+        assert_eq!(total % 0xffff, 0, "UDP checksum does not verify");
+        assert_ne!(&out[40..42], &[0, 0]);
         // Truncated and fragmented frames are rejected.
         assert!(parse(&out[..len - 1]).is_none());
         out[14 + 7] = 1;
